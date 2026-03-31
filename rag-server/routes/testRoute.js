@@ -61,4 +61,11 @@ router.post('/test/embedding', async (req, res, next) => {
   }
 });
 
+// 测试示例（可在testRoute.js中添加测试接口）
+router.post('/test/split', async (req, res) => {
+  const { text } = req.body;
+  const chunks = await splitTextByChineseSemantic(text);
+  res.json({ code: 200, data: { chunks, chunkCount: chunks.length } });
+});
+
 module.exports = router;

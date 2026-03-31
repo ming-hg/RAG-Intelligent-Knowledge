@@ -3,6 +3,8 @@ const corsMiddleware = require('./config/corsConfig'); // 引入跨域配置
 const ragRouter = require('./routes/ragRoute'); // 引入RAG问答路由
 const healthRouter = require('./routes/healthRoute'); // 引入健康检查路由
 const testRouter = require('./routes/testRoute'); // 引入测试路由
+const documentRouter = require('./routes/documentRoute'); // 引入文档上传路由
+const sessionRouter = require('./routes/sessionRoute'); // 引入会话管理路由
 const path = require('path'); // 引入路径模块，配置静态文件目录
 
 // 1. 初始化Express实例
@@ -20,11 +22,23 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // 3.4 配置静态文件服务（后续前端打包后，后端可直接访问前端静态资源）
 app.use(express.static(path.join(__dirname, 'public')));
 
+// 接口耗时统计中间件（所有接口通用）
+app.use((req, res, next) => {
+  req._startTime = Date.now(); // 记录请求开始时间
+  next();
+});
+
 // 引入健康检查路由（可放在跨域配置之后、业务路由之前）
 app.use('/api', healthRouter);
 
 // 引入测试路由（可选，便于后续功能开发测试）
 app.use('/api', testRouter);
+
+// 引入会话路由（与其他路由同级）
+app.use('/api', sessionRouter);
+
+// 引入文档上传路由（放在健康检查和测试路由之后，业务路由之前）
+app.use('/api', documentRouter)
 
 // 引入RAG问答路由（放在健康检查路由之后即可）
 app.use('/api', ragRouter);
