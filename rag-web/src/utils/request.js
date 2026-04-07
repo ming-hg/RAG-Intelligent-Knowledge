@@ -59,7 +59,7 @@ request.interceptors.response.use(
 export function streamRequest(url, params) {
   // 拼接GET请求参数
   const paramStr = new URLSearchParams(params).toString()
-  const fullUrl = `${baseURL}${url}?${paramStr}`
+  const fullUrl = `${BASEURL}${url}?${paramStr}`
 
   // 创建EventSource实例，建立长连接
   const eventSource = new EventSource(fullUrl, { withCredentials: true })

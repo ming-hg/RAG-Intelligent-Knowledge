@@ -154,7 +154,7 @@ const handleStreamChat = async () => {
     content: inputValue,
     time: new Date().toLocaleTimeString()
   }, true)
-  inputValue.value = '' // 清空输入框
+  question.value = '' // 清空输入框
 
   // 2. 添加AI消息占位（用于打字机渲染）
   const aiMessageIndex = chatStore.messageList.length
@@ -167,7 +167,7 @@ const handleStreamChat = async () => {
 
   // 3. 发起SSE流式请求
   const eventSource = streamRequest('/api/rag/chat/stream', {
-    inputValue,
+    question: inputValue,
     sessionId: chatStore.currentSessionId
   })
 
