@@ -18,6 +18,14 @@ export const useKnowledgeStore = defineStore('knowledge', {
       this.uploadError = ''
       this.knowledgeStatus = 'normal'
     },
+    // 重置上传进度
+    resetUploadProgress() {
+      this.uploadProgress = 0
+    },
+    // 删除文档
+    deleteDocument(fileName) {
+      this.documentList = this.documentList.filter(doc => doc.fileName !== fileName)
+    },
     // 设置上传错误
     setUploadError(msg) {
       this.uploadError = msg

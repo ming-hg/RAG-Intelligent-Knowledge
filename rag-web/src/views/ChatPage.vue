@@ -173,32 +173,46 @@ const handleStreamChat = async () => {
 
   // 4. 监听流式数据
   eventSource.onmessage = (event) => {
-    // 解析后端推送的数据（JSON格式）
-    const data = JSON.parse(event.data)
+    try {
+      // 解析后端推送的数据（JSON格式）
+      const data = JSON.parse(event.data)
 
-    // 处理心跳包（避免浏览器断开连接）
-    if (data === 'ping') return
+      // 处理心跳包（避免浏览器断开连接）
+      if (data === 'ping') return
 
-    // 处理错误信息
-    if (data.error) {
-      ElMessage.error(data.error)
-      // 更新AI消息为错误提示
-      chatStore.messageList[aiMessageIndex].content = data.error
-      eventSource.close() // 关闭连接
+      // 处理错误信息
+      if (data.error) {
+        ElMessage.error(data.error)
+        // 更新AI消息为错误提示
+        chatStore.messageList[aiMessageIndex].content = data.error
+        eventSource.close() // 关闭连接
+        return
+      }
+
+      // 流式拼接AI回答（打字机效果核心）
+      if (data.content) {
+        chatStore.messageList[aiMessageIndex].content += data.content
+      }
+
+      // 流式结束，补充引用来源，关闭连接
+      if (data.done) {
+        chatStore.messageList[aiMessageIndex].sourceList = data.sourceList || []
+        eventSource.close()
+        console.log('流式问答完成，连接已关闭')
+      }
+    } catch (error) {
+      console.error('解析流式数据失败：', error)
+    }
+  }
+
+  // 监听连接错误（包括连接被中止的情况）
+  eventSource.onerror = (error) => {
+    // 连接被中止或关闭是正常现象，不显示错误
+    if (eventSource.readyState === EventSource.CLOSED) {
+      console.log('SSE连接已关闭')
       return
     }
-
-    // 流式拼接AI回答（打字机效果核心）
-    if (data.content) {
-      chatStore.messageList[aiMessageIndex].content += data.content
-    }
-
-    // 流式结束，补充引用来源，关闭连接
-    if (data.done) {
-      chatStore.messageList[aiMessageIndex].sourceList = data.sourceList || []
-      eventSource.close()
-      console.log('流式问答完成，连接已关闭')
-    }
+    console.error('SSE连接错误：', error)
   }
 
   // 监听页面关闭，主动关闭SSE连接

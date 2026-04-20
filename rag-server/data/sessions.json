@@ -1,1 +1,15 @@
-[]
+[
+  {
+    "sessionId": "af795fb9-a61a-4af5-a2cd-eff89e45bfca",
+    "sessionName": "新会话_2026/4/8 22:44:16",
+    "createTime": "2026-04-08T14:44:16.192Z",
+    "updateTime": "2026-04-08T14:44:16.193Z",
+    "messages": [
+      {
+        "role": "user",
+        "content": "主角是谁",
+        "time": "2026/4/8 22:44:16"
+      }
+    ]
+  }
+]

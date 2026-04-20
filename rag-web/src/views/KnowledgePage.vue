@@ -103,7 +103,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useKnowledgeStore } from '@/store/knowledgeStore'
 import { ElPageHeader, ElUpload, ElProgress, ElCard, ElInput, ElButton, ElTable, ElTableColumn, ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
@@ -124,6 +124,29 @@ watch(() => knowledgeStore.documentList, (val) => {
 watch(() => knowledgeStore.uploadProgress, (val) => {
   uploadProgress.value = val
 })
+
+// 页面挂载时获取文档列表
+onMounted(async () => {
+  await fetchDocumentList()
+})
+
+// 获取文档列表
+const fetchDocumentList = async () => {
+  try {
+    const data = await request.get('/api/knowledge/list')
+    if (data?.docList && Array.isArray(data.docList)) {
+      // 清空现有列表并重新添加
+      knowledgeStore.documentList = data.docList.map(doc => ({
+        fileName: doc.fileName,
+        uploadTime: doc.uploadTime,
+        fileSize: doc.totalLength || 0,
+        chunkCount: doc.chunkCount || 0
+      }))
+    }
+  } catch (error) {
+    console.error('获取文档列表失败：', error)
+  }
+}
 
 // 知识库状态面板数据
 const statusList = computed(() => [
@@ -167,12 +190,14 @@ const handleUploadProgress = (event) => {
 const handleUploadSuccess = (response, file) => {
   // 重置上传进度
   knowledgeStore.resetUploadProgress()
+  // response 是数组，取第一个元素
+  const result = Array.isArray(response) ? response[0] : response
   // 添加文档到知识库状态
   knowledgeStore.addDocument({
     fileName: file.name,
     uploadTime: new Date().toISOString(),
     fileSize: file.size,
-    chunkCount: response.chunkCount
+    chunkCount: result?.chunkCount || 0
   })
   ElMessage.success('文档上传成功，已加入知识库')
   // 清空文件列表

@@ -35,7 +35,7 @@ import { Upload } from '@element-plus/icons-vue'
 import { useKnowledgeStore } from '@/store/knowledgeStore'
 
 // 上传接口地址（后端文档上传接口）
-const uploadUrl = 'http://localhost:3000/api/document/upload'
+const uploadUrl = 'http://localhost:3000/api/knowledge/upload'
 
 // 文件列表
 const fileList = ref([])

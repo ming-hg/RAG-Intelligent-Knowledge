@@ -129,6 +129,9 @@ async function ragChat(req, res) {
  * 核心逻辑：SSE长连接 → 问题检索 → Prompt组装 → 流式调用大模型 → 实时推送Token → 连接管理
  */
 async function ragChatStream(req, res) {
+  let currentSessionId = null;
+  let answer = ''; // 用于拼接完整的回答
+  
   try {
     const { question, sessionId } = req.query;
     // 1. 参数校验（补充：GET请求参数校验，与全量接口保持一致）
@@ -139,10 +142,10 @@ async function ragChatStream(req, res) {
     }
 
     // 2. 处理会话ID（与全量接口逻辑一致）
-    const currentSessionId = sessionId || uuidv4();
+    currentSessionId = sessionId || uuidv4();
 
     // 3. 设置SSE响应头（补充细节：完善跨域、缓存、连接保持配置）
-    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173'); // 明确前端地址，避免跨域问题
@@ -158,14 +161,32 @@ async function ragChatStream(req, res) {
 
     // 5. 处理检索空结果（流式返回提示，不调用大模型）
     if (retrieveResult.length === 0) {
+      const noResultMsg = '抱歉，当前知识库中没有找到相关内容，请补充对应文档后再提问。';
       res.write(`data: ${JSON.stringify({
-        content: '抱歉，当前知识库中没有找到相关内容，请补充对应文档后再提问。',
+        content: noResultMsg,
         sessionId: currentSessionId,
         done: false
-      })}\n\n`);
+      })}
+\n`);
       // 发送结束标记
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-      return res.end();
+      res.write(`data: ${JSON.stringify({ done: true })}
+\n`);
+      res.end();
+      
+      // 存储会话消息
+      try {
+        await addSessionMessage(currentSessionId, {
+          role: 'user',
+          content: question
+        });
+        await addSessionMessage(currentSessionId, {
+          role: 'assistant',
+          content: noResultMsg
+        });
+      } catch (error) {
+        console.error('存储会话消息失败：', error);
+      }
+      return;
     }
 
     // 6. 拼接上下文与组装Prompt（与全量接口一致）
@@ -186,7 +207,7 @@ async function ragChatStream(req, res) {
     // 7. 处理连接中断（补充边界处理：客户端关闭连接时，终止流式推送，释放资源）
     req.on('close', () => {
       console.log(`客户端关闭连接，会话ID：${currentSessionId}`);
-      res.end(); // 关闭响应流
+      // 注意：这里不调用res.end()，因为流可能已经在其他地方结束
     });
 
     // 8. 调用LM Studio流式接口，实时推送Token（补充细节：处理流式中断、异常）
@@ -199,13 +220,15 @@ async function ragChatStream(req, res) {
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content || '';
       if (content) {
+        answer += content; // 拼接完整回答
         // 格式化推送数据，确保前端能正常解析
         const pushData = JSON.stringify({
           content,
           sessionId: currentSessionId,
           done: false
         });
-        res.write(`data: ${pushData}\n\n`);
+        res.write(`data: ${pushData}
+\n`);
         // 控制推送速度，避免前端渲染卡顿（可选，根据模型响应速度调整）
         await new Promise(resolve => setTimeout(resolve, 30));
       }
@@ -215,7 +238,8 @@ async function ragChatStream(req, res) {
     res.write(`data: ${JSON.stringify({
       sourceList,
       done: true
-    })}\n\n`);
+    })}
+\n`);
     res.end(); // 正常结束响应流
 
     // 流式结束后，存储会话消息
@@ -226,27 +250,21 @@ async function ragChatStream(req, res) {
       });
       await addSessionMessage(currentSessionId, {
         role: 'assistant',
-        content: answer // 需在流式推送时拼接完整answer，存储完整消息
-      });
-    } catch (error) {
-      const newSession = createSession();
-      await addSessionMessage(newSession.sessionId, {
-        role: 'user',
-        content: question
-      });
-      await addSessionMessage(newSession.sessionId, {
-        role: 'assistant',
         content: answer
       });
-      currentSessionId = newSession.sessionId;
+    } catch (error) {
+      console.error('存储流式会话消息失败：', error);
     }
 
   } catch (error) {
     console.error('流式问答接口异常：', error);
     // 补充：异常流式返回，让前端能捕获错误并提示
     const errorMsg = error.message || '流式问答服务异常，请稍后重试';
-    res.write(`data: ${JSON.stringify({ error: errorMsg, done: true })}\n\n`);
-    res.end();
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ error: errorMsg, done: true })}
+\n`);
+      res.end();
+    }
   }
 }
 

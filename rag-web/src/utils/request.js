@@ -71,9 +71,14 @@ export function streamRequest(url, params) {
 
   // 监听连接错误事件（处理中断、重连）
   eventSource.onerror = (error) => {
+    // 连接被中止（ERR_ABORTED）是正常现象，不显示错误
+    if (eventSource.readyState === EventSource.CLOSED) {
+      console.log('SSE连接已正常关闭')
+      return
+    }
     console.error('SSE连接异常：', error)
     // 连接中断时，尝试重连（最多重连3次）
-    if (eventSource.readyState === EventSource.CLOSED) {
+    if (eventSource.readyState === EventSource.CONNECTING) {
       let reconnectCount = 0
       const reconnect = () => {
         if (reconnectCount >= 3) {
