@@ -165,6 +165,23 @@ class ChatServiceTest {
         assertThat(((AiMessage) messages.get(2)).text()).isEqualTo("上一轮的回答");
     }
 
+    /** 人工订正过的回答要顶替模型原文进入下一轮上下文：否则改完再问，模型还在引用自己那句错话。 */
+    @Test
+    void annotatedAnswerReplacesTheModelOriginalInFollowingTurns() {
+        stubSession();
+        when(chats.listMessages(eq(SESSION_ID), anyInt())).thenReturn(List.of(
+                message("user", "上一轮的问题", "DONE"), answered("模型答错了", "订正后的答案")));
+        stubSearch(List.of(hit(11, "正文")));
+        stubAnswerRow();
+        generate("新答案");
+
+        service().ask(request("追问"), sink);
+
+        List<ChatMessage> messages = sentMessages();
+        assertThat(((AiMessage) messages.get(2)).text()).isEqualTo("订正后的答案");
+        assertThat(((AiMessage) messages.get(2)).text()).doesNotContain("模型答错了");
+    }
+
     @Test
     void partialAnswerIsKeptWhenTheModelDiesMidStream() {
         stubSession();
@@ -312,9 +329,15 @@ class ChatServiceTest {
         return new ChatRepository.Session(SESSION_ID, "测试会话", kbIds, false, null, null);
     }
 
+    /** 反馈三兄弟默认全空：历史裁剪与上下文拼装只关心 role/content/status，评分与订正另有测试覆盖。 */
     private static ChatRepository.Message message(String role, String content, String status) {
         return new ChatRepository.Message(UUID.randomUUID(), SESSION_ID, role, content, status, null, null, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
+    }
+
+    private static ChatRepository.Message answered(String content, String annotated) {
+        return new ChatRepository.Message(UUID.randomUUID(), SESSION_ID, "assistant", content, "DONE", null, null, null,
+                null, null, null, 1, null, annotated, null, null, null);
     }
 
     private static ChatService.AskRequest request(String question) {

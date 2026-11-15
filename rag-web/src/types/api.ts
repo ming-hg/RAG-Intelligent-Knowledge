@@ -183,9 +183,24 @@ export interface ChatMessage {
   promptTokens: number | null
   completionTokens: number | null
   model: string | null
+  /** -1 差 / 0 中性（也是撤销）/ 1 好；null 表示还没评过。 */
+  rating: number | null
+  feedbackText: string | null
+  /** 人工订正过的答案：下一轮问答会用它顶替 content 进入上下文。 */
+  annotatedAnswer: string | null
   traceId: string | null
   createdAt: string
   finishedAt: string | null
+}
+
+/**
+ * PATCH /api/chat/messages/{id} 的请求体。
+ * 省略或 null 都表示「这一项不改」，清空必须传空串——后端用 COALESCE 区分两者。
+ */
+export interface FeedbackPatch {
+  rating?: number | null
+  feedbackText?: string | null
+  annotatedAnswer?: string | null
 }
 
 /** SSE meta 事件比落库的 retrieval_meta 多一个 sources 数组，单独开一个类型。 */

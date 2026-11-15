@@ -2,12 +2,14 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import FeedbackBar from '@/components/FeedbackBar.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 import RetrievalMetaBar from '@/components/RetrievalMetaBar.vue'
 import ScopePicker from '@/components/ScopePicker.vue'
 import SourcePanel from '@/components/SourcePanel.vue'
 import { useChatStore } from '@/stores/chat'
 import { useUiStore } from '@/stores/ui'
+import type { ChatMessage } from '@/types/api'
 
 const chat = useChatStore()
 const ui = useUiStore()
@@ -69,6 +71,19 @@ async function renameSession(id: string, current: string) {
 
 function inspect(payload: { docId: number; segmentId: number }) {
   void router.push({ name: 'documents', query: { doc: String(payload.docId), segment: String(payload.segmentId) } })
+}
+
+/** 订正过的答案是这个会话后续问答的事实来源，界面也得以订正为准，否则用户会以为自己改的内容没生效。 */
+const answerText = (message: ChatMessage): string => message.annotatedAnswer || message.content
+
+/** 展开看模型原文的消息 id：改错了要能对比，但默认不占版面。 */
+const showingRaw = ref(new Set<string>())
+
+function toggleRaw(id: string) {
+  const next = new Set(showingRaw.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  showingRaw.value = next
 }
 
 const statusText = (status: string | null): string | null => {
@@ -143,7 +158,16 @@ const statusText = (status: string | null): string | null => {
           <div v-if="message.role === 'user'" class="body">{{ message.content }}</div>
           <template v-else>
             <RetrievalMetaBar :meta="message.retrievalMeta" />
-            <MarkdownView :text="message.content" @select="chat.selectedCitation = $event" />
+            <MarkdownView :text="answerText(message)" @select="chat.selectedCitation = $event" />
+
+            <div v-if="message.annotatedAnswer" class="raw-toggle">
+              <button class="link" type="button" @click="toggleRaw(message.id)">
+                {{ showingRaw.has(message.id) ? '收起模型原文' : '查看模型原文' }}
+              </button>
+              <MarkdownView v-if="showingRaw.has(message.id)" :text="message.content" />
+            </div>
+
+            <FeedbackBar :message="message" />
           </template>
         </article>
 
@@ -288,6 +312,25 @@ const statusText = (status: string | null): string | null => {
 .who {
   gap: 6px;
   color: var(--muted);
+  font-size: 12px;
+}
+
+.raw-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  background: #fafbfc;
+}
+
+.link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
   font-size: 12px;
 }
 

@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { chatApi } from '@/api/chat'
 import { useUiStore } from './ui'
-import type { AskDone, AskMeta, ChatMessage, ChatSession, Source } from '@/types/api'
+import type { AskDone, AskMeta, ChatMessage, ChatSession, FeedbackPatch, Source } from '@/types/api'
 
 /** 正在生成的那条回答：落库前后它替代历史里的 assistant 行显示。 */
 interface Live {
@@ -184,6 +184,22 @@ export const useChatStore = defineStore('chat', {
         this.live = null
       }
       await this.loadSessions()
+    },
+
+    /**
+     * 反馈写库后就地合并这一条消息：重载整个会话会让用户正在看的位置闪一下，
+     * 而且后端 PATCH 只回「记下了」，不回新的行。
+     */
+    async setFeedback(id: string, patch: FeedbackPatch) {
+      await chatApi.feedback(id, patch)
+      const message = this.messages.find((item) => item.id === id)
+      if (!message) return
+      // null / undefined 在后端同样是「这项不改」，本地合并必须遵守同一套语义，否则点 👍 会把已写的反馈在界面上抹掉
+      if (patch.rating !== undefined && patch.rating !== null) message.rating = patch.rating
+      if (patch.feedbackText !== undefined && patch.feedbackText !== null) message.feedbackText = patch.feedbackText
+      if (patch.annotatedAnswer !== undefined && patch.annotatedAnswer !== null) {
+        message.annotatedAnswer = patch.annotatedAnswer
+      }
     },
 
     /** 停止只是断开这条流：后端会继续生成并落库，重新打开会话就能看到完整回答。 */

@@ -34,18 +34,24 @@ public class ChatRepository {
 
     public record Message(UUID id, UUID sessionId, String role, String content, String status, String queryFinal,
                           String sourcesJson, String retrievalMetaJson, Integer promptTokens,
-                          Integer completionTokens, String model, String traceId, Instant createdAt,
-                          Instant finishedAt) {
+                          Integer completionTokens, String model, Integer rating, String feedbackText,
+                          String annotatedAnswer, String traceId, Instant createdAt, Instant finishedAt) {
 
         public boolean fromUser() {
             return "user".equals(role);
+        }
+
+        /** 人工订正过的答案优先于模型原文：改过之后还继续喂旧文本，等于让模型反复引用自己那句错话。 */
+        public String contextText() {
+            return annotatedAnswer == null || annotatedAnswer.isBlank() ? content : annotatedAnswer;
         }
     }
 
     private static final String SESSION_COLUMNS = "id, title, kb_ids, pinned, created_at, updated_at";
     private static final String MESSAGE_COLUMNS = """
             id, session_id, role, content, status, query_final, sources::text AS sources_json,
-            retrieval_meta::text AS retrieval_meta_json, prompt_tokens, completion_tokens, model, trace_id,
+            retrieval_meta::text AS retrieval_meta_json, prompt_tokens, completion_tokens, model,
+            rating, feedback_text, annotated_answer, trace_id,
             created_at, finished_at
             """;
 
@@ -69,6 +75,9 @@ public class ChatRepository {
             (Integer) rs.getObject("prompt_tokens"),
             (Integer) rs.getObject("completion_tokens"),
             rs.getString("model"),
+            rs.getObject("rating", Integer.class),
+            rs.getString("feedback_text"),
+            rs.getString("annotated_answer"),
             rs.getString("trace_id"),
             instant(rs.getTimestamp("created_at")),
             instant(rs.getTimestamp("finished_at")));
@@ -177,6 +186,24 @@ public class ChatRepository {
                 + " WHERE id = :id",
                 new MapSqlParameterSource().addValue("id", messageId).addValue("content", content)
                         .addValue("status", status));
+    }
+
+    /**
+     * 评分、反馈与人工订正。三个字段各自独立可选：传 null 表示这次不改，清空评分要显式传 0（中性），
+     * 清空文本要传空串——只点 👍 不该把之前写的反馈抹掉。
+     * 只允许标 assistant 行：用户消息的正文就是提问本身，给它打分没有意义，还会把统计口径搞混。
+     */
+    public int setFeedback(UUID messageId, Integer rating, String feedbackText, String annotatedAnswer) {
+        return jdbc.update("UPDATE chat_message SET"
+                + " rating = COALESCE(CAST(:rating AS smallint), rating),"
+                + " feedback_text = COALESCE(CAST(:feedbackText AS text), feedback_text),"
+                + " annotated_answer = COALESCE(CAST(:annotatedAnswer AS text), annotated_answer)"
+                + " WHERE id = :id AND role = 'assistant'",
+                new MapSqlParameterSource()
+                        .addValue("id", messageId)
+                        .addValue("rating", rating)
+                        .addValue("feedbackText", feedbackText)
+                        .addValue("annotatedAnswer", annotatedAnswer));
     }
 
     public void touchSession(UUID sessionId) {

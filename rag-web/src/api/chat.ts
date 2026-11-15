@@ -1,6 +1,6 @@
 import { http } from './http'
 import { postStream } from './sse'
-import type { AskDone, AskMeta, AskRequest, ChatMessage, ChatSession } from '@/types/api'
+import type { AskDone, AskMeta, AskRequest, ChatMessage, ChatSession, FeedbackPatch } from '@/types/api'
 
 export interface AskHandlers {
   onMeta: (meta: AskMeta) => void
@@ -27,6 +27,13 @@ export const chatApi = {
     http.patch<ChatSession>(`/chat/sessions/${id}`, { pinned }),
 
   remove: (id: string) => http.del<{ sessionId: string }>(`/chat/sessions/${id}`),
+
+  /**
+   * 只发给 assistant 行。字段省略或传 null 都表示「这次不改」，清空要显式传空串——
+   * 所以只点 👍 不会把之前写过的反馈抹掉（后端用 COALESCE 落实这一条）。
+   */
+  feedback: (id: string, patch: FeedbackPatch) =>
+    http.patchJson<{ messageId: string }>(`/chat/messages/${id}`, patch),
 
   /** 返回的 Promise 在流结束时 resolve；调用方用 AbortSignal 主动停止。 */
   ask: async (request: AskRequest, handlers: AskHandlers, signal?: AbortSignal): Promise<void> => {

@@ -70,7 +70,8 @@ public class ChatController {
 
     public record MessageView(UUID id, String role, String content, String status, String queryFinal,
                               List<ChatService.SourceView> sources, Map<String, Object> retrievalMeta,
-                              Integer promptTokens, Integer completionTokens, String model, String traceId,
+                              Integer promptTokens, Integer completionTokens, String model, Integer rating,
+                              String feedbackText, String annotatedAnswer, String traceId,
                               Instant createdAt, Instant finishedAt) {
     }
 
@@ -136,6 +137,41 @@ public class ChatController {
         return ApiResponse.ok(Map.of("sessionId", id), "会话已删除");
     }
 
+    public record FeedbackBody(Integer rating, String feedbackText, String annotatedAnswer) {
+    }
+
+    /**
+     * 反馈闭环：👍/👎 与文字反馈用来看趋势，人工订正过的答案会被导出成评测集（M5e），
+     * 所以下一轮问答直接把订正当历史事实，而不是继续引用模型那句错话。
+     */
+    @PatchMapping("/messages/{id}")
+    public ApiResponse<Map<String, Object>> feedback(@PathVariable UUID id, @RequestBody FeedbackBody body) {
+        if (body == null || (body.rating() == null && body.feedbackText() == null && body.annotatedAnswer() == null)) {
+            throw RagException.badRequest("rating / feedbackText / annotatedAnswer 至少给一个");
+        }
+        if (body.rating() != null && (body.rating() < -1 || body.rating() > 1)) {
+            throw RagException.badRequest("rating 只接受 -1（差）、0（中性/撤销）、1（好），收到 " + body.rating());
+        }
+        String feedback = trimmed(body.feedbackText(), 2000, "反馈");
+        String annotated = trimmed(body.annotatedAnswer(), 20000, "订正答案");
+        if (chats.setFeedback(id, body.rating(), feedback, annotated) == 0) {
+            throw RagException.notFound("消息不存在或不是一条模型回答：" + id);
+        }
+        return ApiResponse.ok(Map.of("messageId", id), "反馈已记录");
+    }
+
+    /** null 表示「这次不改」，空串表示「清空」，两者在 SQL 里靠 COALESCE 区分，所以这里不能提前把空串吃掉。 */
+    private static String trimmed(String value, int maxChars, String label) {
+        if (value == null) {
+            return null;
+        }
+        String clean = value.trim();
+        if (clean.length() > maxChars) {
+            throw RagException.badRequest(label + "最长 " + maxChars + " 字，当前 " + clean.length());
+        }
+        return clean;
+    }
+
     private ChatService.AskRequest toRequest(AskBody body) {
         if (body == null || body.question() == null || body.question().isBlank()) {
             throw RagException.badRequest("question 不能为空");
@@ -152,7 +188,8 @@ public class ChatController {
     private MessageView view(ChatRepository.Message message) {
         return new MessageView(message.id(), message.role(), message.content(), message.status(),
                 message.queryFinal(), readList(message.sourcesJson()), readMap(message.retrievalMetaJson()),
-                message.promptTokens(), message.completionTokens(), message.model(), message.traceId(),
+                message.promptTokens(), message.completionTokens(), message.model(), message.rating(),
+                message.feedbackText(), message.annotatedAnswer(), message.traceId(),
                 message.createdAt(), message.finishedAt());
     }
 

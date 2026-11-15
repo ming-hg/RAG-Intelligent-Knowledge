@@ -10,8 +10,8 @@
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3 已落地 |
-| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a 已落地 |
+| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
 | `docs` | 方案、ADR、硬性约束、接入手册 |
@@ -39,7 +39,7 @@ curl http://localhost:8080/api/documents
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 124 例）：
+不连数据库也能验证的代码层测试（当前 137 例）：
 
 ```bash
 cd rag-api && mvn -o test
@@ -54,6 +54,13 @@ curl "http://localhost:8080/api/search?q=怎么分块&kbId=1&topK=5"
 # 流式问答：事件序列 meta -> delta* -> done
 curl -N -H "Content-Type: application/json" -d '{"question":"这份文档怎么分块的？","kbIds":[1]}' \
   http://localhost:8080/api/chat/ask
+
+# 反馈闭环：只点 👍 不会抹掉已写的反馈文字（缺席=不改，空串=清空）；
+# 订正过的答案会顶替模型原文进入下一轮问答的历史
+curl -X PATCH -H "Content-Type: application/json" -d '{"rating":1}' \
+  http://localhost:8080/api/chat/messages/{answerId}
+curl -X PATCH -H "Content-Type: application/json" -d '{"annotatedAnswer":"正确的说法是……"}' \
+  http://localhost:8080/api/chat/messages/{answerId}
 ```
 
 真机模型链路校验（默认跳过，会把地址、模型名、维度、批量、流式一次验完）：

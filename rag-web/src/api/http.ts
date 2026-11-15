@@ -108,6 +108,10 @@ export const http = {
   patch: <T>(path: string, params?: Record<string, QueryValue>, options?: RequestOptions) =>
     requestJson<T>(`${path}${queryString(params)}`, { method: 'PATCH' }, options),
 
+  /** 后端的 PATCH 有两种写法：会话改名走查询参数，消息反馈走 JSON 体（字段要用 null 和空串区分「不改」和「清空」）。 */
+  patchJson: <T>(path: string, body: unknown, options?: RequestOptions) =>
+    requestJson<T>(path, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }, options),
+
   del: <T>(path: string, options?: RequestOptions) =>
     requestJson<T>(path, { method: 'DELETE' }, options),
 

@@ -134,7 +134,7 @@ public class ChatService {
                 request.docIds(), request.mode(), request.topK());
         RagProperties.Budget budget = props.retrieval().budget();
         List<ChatRepository.Message> recent = trimHistory(history, budget);
-        int conversationChars = recent.stream().mapToInt(m -> m.content().length()).sum() + question.length();
+        int conversationChars = recent.stream().mapToInt(m -> m.contextText().length()).sum() + question.length();
         int budgetChars = ContextPlanner.budgetChars(budget, conversationChars);
 
         Map<Long, String> parents = retrieval.parentContents(outcome.hits().stream().map(SearchHit::parentId).toList());
@@ -218,14 +218,14 @@ public class ChatService {
         int chars = 0;
         for (int i = recent.size() - 1; i >= 0; i--) {
             ChatRepository.Message message = recent.get(i);
-            if (message.content() == null || message.content().isBlank()
-                    || STATUS_REFUSED.equals(message.status())) {
+            String text = message.contextText();
+            if (text == null || text.isBlank() || STATUS_REFUSED.equals(message.status())) {
                 continue;
             }
-            if (!kept.isEmpty() && chars + message.content().length() > maxChars) {
+            if (!kept.isEmpty() && chars + text.length() > maxChars) {
                 break;
             }
-            chars += message.content().length();
+            chars += text.length();
             kept.add(0, message);
         }
         return kept;
@@ -253,14 +253,14 @@ public class ChatService {
     private static List<ChatMessage> toChatHistory(List<ChatRepository.Message> history) {
         List<ChatMessage> messages = new ArrayList<>();
         for (ChatRepository.Message message : history) {
-            if (message.content() == null || message.content().isBlank()
-                    || STATUS_REFUSED.equals(message.status())) {
+            String text = message.contextText();
+            if (text == null || text.isBlank() || STATUS_REFUSED.equals(message.status())) {
                 continue;
             }
             if (message.fromUser()) {
-                messages.add(UserMessage.from(message.content()));
+                messages.add(UserMessage.from(text));
             } else if ("assistant".equals(message.role())) {
-                messages.add(AiMessage.from(message.content()));
+                messages.add(AiMessage.from(text));
             }
         }
         return messages;
