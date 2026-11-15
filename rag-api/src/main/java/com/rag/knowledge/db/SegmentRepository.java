@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.StringJoiner;
 
 /**
@@ -101,7 +102,8 @@ public class SegmentRepository {
                                              int offset) {
         String sql = """
                 SELECT s.id, s.chunk_no, p.chunk_no AS parent_chunk_no, s.content, s.heading_path,
-                       s.page_start, s.page_end, s.char_start, s.char_end, s.available, s.emb_status, s.hit_count
+                       s.page_start, s.page_end, s.char_start, s.char_end, s.available, s.emb_status,
+                       s.edited_at, s.hit_count
                 FROM kb_segment s
                 LEFT JOIN kb_segment p ON p.id = s.parent_id
                 WHERE s.doc_id = ? AND s.doc_version = ?
@@ -109,6 +111,18 @@ public class SegmentRepository {
                 + (onlySearchable ? "AND s.emb_status = 'READY' " : "")
                 + "ORDER BY s.chunk_no LIMIT ? OFFSET ?";
         return jdbc.query(sql, SEGMENT_MAPPER, docId, docVersion, limit, offset);
+    }
+
+    /** 编辑框要拿整块全文，列表里的正文是按宽度截断显示的。 */
+    public Optional<SegmentView> findView(long docId, long segmentId) {
+        return jdbc.query("""
+                SELECT s.id, s.chunk_no, p.chunk_no AS parent_chunk_no, s.content, s.heading_path,
+                       s.page_start, s.page_end, s.char_start, s.char_end, s.available, s.emb_status,
+                       s.edited_at, s.hit_count
+                FROM kb_segment s
+                LEFT JOIN kb_segment p ON p.id = s.parent_id
+                WHERE s.id = ? AND s.doc_id = ?
+                """, SEGMENT_MAPPER, segmentId, docId).stream().findFirst();
     }
 
     public int countForDocument(long docId, int docVersion) {
@@ -130,6 +144,7 @@ public class SegmentRepository {
             rs.getInt("char_end"),
             rs.getBoolean("available"),
             rs.getString("emb_status"),
+            rs.getObject("edited_at") != null,
             rs.getInt("hit_count"));
 
     public int count(long docId, int docVersion, boolean onlyPublished) {
@@ -154,6 +169,28 @@ public class SegmentRepository {
     public int setAvailable(long docId, long segmentId, boolean available) {
         return jdbc.update("UPDATE kb_segment SET available = ? WHERE id = ? AND doc_id = ?",
                 available, segmentId, docId);
+    }
+
+    /**
+     * 改正文的同时把向量作废。留旧向量是更糟的选择：向量路会继续按改之前的文字把这块排到前面，
+     * 用户看到的却是改后的文字，于是「相似度 0.83 但答案对不上」这种没法追查的现象就出现了。
+     * <p>
+     * 父块本来就不生成向量（SKIPPED），不能被这条语句带成「等着向量化」——那样它会出现在补算队列里，
+     * 而给它算向量反而是错的。关键词路不需要这里做什么：`content_ts` 是生成列，正文一改就自动重算。
+     */
+    public int editContent(long docId, long segmentId, String content) {
+        return jdbc.update("""
+                UPDATE kb_segment
+                SET content = ?, embedding = NULL, embedding_model = NULL, edited_at = now(),
+                    emb_status = CASE WHEN emb_status = 'SKIPPED' THEN 'SKIPPED' ELSE 'PENDING' END
+                WHERE id = ? AND doc_id = ?
+                """, content, segmentId, docId);
+    }
+
+    /** 单块补算向量：与批量入库用同一套状态名，READY 才有向量可查。 */
+    public int setEmbedding(long docId, long segmentId, String vectorLiteral, String embeddingModel) {
+        return jdbc.update("UPDATE kb_segment SET embedding = ?::vector, embedding_model = ?,"
+                + " emb_status = 'READY' WHERE id = ? AND doc_id = ?", vectorLiteral, embeddingModel, segmentId, docId);
     }
 
     public static String toVectorLiteral(float[] vector) {

@@ -16,5 +16,12 @@ public record SegmentView(
         Integer charEnd,
         boolean available,
         String embStatus,
+        /** 这块被人工改过正文：`charStart/charEnd` 描述的还是编辑前那份正文里的位置。 */
+        boolean edited,
         int hitCount) {
+
+    /** 父块只当上下文、不参与向量召回，判据是入库时留下的 SKIPPED。 */
+    public boolean parentBlock() {
+        return "SKIPPED".equals(embStatus);
+    }
 }

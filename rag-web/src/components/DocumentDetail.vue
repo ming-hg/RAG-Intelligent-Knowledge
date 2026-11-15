@@ -2,7 +2,14 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { documentsApi, type ChunkParams } from '@/api/documents'
-import type { ChunkConfigView, ChunkOverride, DocumentView, PreviewBlock, SegmentView } from '@/types/api'
+import type {
+  ChunkConfigView,
+  ChunkOverride,
+  DocumentView,
+  PreviewBlock,
+  SegmentEditResult,
+  SegmentView,
+} from '@/types/api'
 
 const props = defineProps<{ docId: number | null; focusSegment?: number | null }>()
 
@@ -72,6 +79,61 @@ async function loadContent() {
   content.value = await documentsApi.content(doc.value.id)
 }
 
+const editing = ref<SegmentView | null>(null)
+const draft = ref('')
+const reembedDraft = ref(true)
+const editSaving = ref(false)
+
+/** 父块没向量是设计不是故障：勾上重算只会多打一次 embedding，后端也一样会短路回来，这里直接不让勾。 */
+const isParentBlock = computed(() => editing.value?.embStatus === 'SKIPPED')
+
+function openEditor(segment: SegmentView) {
+  editing.value = segment
+  draft.value = segment.content
+  reembedDraft.value = segment.embStatus !== 'SKIPPED'
+}
+
+/** 整行换掉而不是只改 content：后端顺手把 emb_status / edited_at 的新状态带回来，界面跟着它走。 */
+function replaceSegment(segment: SegmentView) {
+  const index = segments.value.findIndex((row) => row.id === segment.id)
+  if (index >= 0) segments.value[index] = segment
+}
+
+/** 勾了「同时重算向量」却没算成才算事故；父块和不重算那两种 note 是按设计给出的说明。 */
+function reportEdit(result: SegmentEditResult, askedEmbed: boolean, okMessage: string) {
+  if (result.note === null) {
+    ElMessage.success(okMessage)
+    return
+  }
+  ElMessage({ message: result.note, type: askedEmbed ? 'warning' : 'success', duration: 6000 })
+}
+
+async function saveEdit() {
+  if (!doc.value || !editing.value) return
+  editSaving.value = true
+  try {
+    const result = await documentsApi.editSegment(doc.value.id, editing.value.id, draft.value, reembedDraft.value)
+    replaceSegment(result.segment)
+    editing.value = null
+    reportEdit(result, reembedDraft.value, '正文已保存，向量已同步重算')
+  } catch {
+    // toast 已由 http 层弹过；这里不关弹框，让用户拿改过的草稿接着编辑
+  } finally {
+    editSaving.value = false
+  }
+}
+
+async function reembedOne(segment: SegmentView) {
+  if (!doc.value) return
+  try {
+    const result = await documentsApi.reembedSegment(doc.value.id, segment.id)
+    replaceSegment(result.segment)
+    reportEdit(result, true, '向量已重算，这一条重新进入语义召回')
+  } catch {
+    // 同上：409/503 都已经弹过 toast，界面保持原样就是最准确的反馈
+  }
+}
+
 /** 分块预览不写库、不调模型：试参数唯一花钱的地方是 embedding，先看清再重算。 */
 async function runPreview() {
   if (!doc.value) return
@@ -134,9 +196,20 @@ const pct = (progress: number) => `${progress}%`
         <el-tab-pane label="分块" name="segments">
           <p class="muted hint">
             关闭「检索」即从检索谓词里排除该块，立刻生效且完全可逆；父块没有向量（SKIPPED），只作为上下文被展开。
+            改正文只动这一块，不必整篇重算。
           </p>
           <el-table :data="segments" size="small" max-height="420" row-key="id" :row-class-name="focusRow">
-            <el-table-column prop="chunkNo" label="#" width="52" />
+            <el-table-column label="#" width="94">
+              <template #default="{ row }">
+                <span class="mono">{{ row.chunkNo }}</span>
+                <span
+                  v-if="row.edited"
+                  class="tag edited"
+                  title="正文是人工改过的：字符偏移记的还是编辑前的位置，整篇重算会被冲掉"
+                  >已编辑</span
+                >
+              </template>
+            </el-table-column>
             <el-table-column label="父块" width="60">
               <template #default="{ row }">{{ row.parentChunkNo ?? '—' }}</template>
             </el-table-column>
@@ -163,6 +236,20 @@ const pct = (progress: number) => `${progress}%`
             <el-table-column label="检索" width="70">
               <template #default="{ row }">
                 <el-switch :model-value="row.available" size="small" @change="toggle(row)" />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="132">
+              <template #default="{ row }">
+                <el-button size="small" text @click="openEditor(row)">编辑</el-button>
+                <el-button
+                  v-if="row.embStatus === 'PENDING'"
+                  size="small"
+                  text
+                  type="primary"
+                  title="这块的向量还是空的，只有关键词能命中它"
+                  @click="reembedOne(row)"
+                  >重算向量</el-button
+                >
               </template>
             </el-table-column>
           </el-table>
@@ -219,6 +306,40 @@ const pct = (progress: number) => `${progress}%`
           </ol>
         </el-tab-pane>
       </el-tabs>
+
+      <el-dialog
+        :model-value="editing !== null"
+        top="5vh"
+        width="min(680px, calc(100vw - 32px))"
+        :title="editing ? `编辑块 #${editing.chunkNo}` : ''"
+        @close="editing = null"
+      >
+        <template v-if="editing">
+          <p class="row editor-meta">
+            <span class="tag">向量 {{ editing.embStatus }}</span>
+            <span class="muted mono">
+              页 {{ editing.pageStart ?? '—' }}-{{ editing.pageEnd ?? '—' }} / 字 {{ editing.charStart ?? '—' }}-{{
+                editing.charEnd ?? '—'
+              }}
+            </span>
+            <span v-if="editing.parentChunkNo" class="tag">父块 {{ editing.parentChunkNo }}</span>
+          </p>
+          <el-input v-model="draft" type="textarea" :rows="10" resize="none" spellcheck="false" />
+          <p class="muted editor-note">
+            子块是命中后引用给你的那一段，父块是命中时一起展开的上下文——改父块不会影响它自己进不进检索，因为它不参与向量召回。
+            字符偏移记的是编辑前的位置；这里的内容只活到下一次整篇重算。
+          </p>
+          <el-checkbox v-model="reembedDraft" :disabled="isParentBlock">
+            同时重算向量
+            <span v-if="isParentBlock" class="muted">（父块不生成向量）</span>
+          </el-checkbox>
+        </template>
+        <template #footer>
+          <span class="muted editor-count">{{ draft.length }} 字</span>
+          <el-button size="small" @click="editing = null">取消</el-button>
+          <el-button size="small" type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+        </template>
+      </el-dialog>
     </template>
 
     <p v-else class="muted empty">选择左侧文档查看详情。</p>
@@ -236,6 +357,31 @@ const pct = (progress: number) => `${progress}%`
 
 .hint {
   margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.tag.edited {
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #a1620a;
+  background: #fff4e0;
+}
+
+.editor-meta {
+  margin: 0 0 8px;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.editor-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.editor-count {
+  float: left;
   font-size: 12px;
 }
 

@@ -3,6 +3,7 @@ package com.rag.knowledge.web;
 import com.rag.knowledge.app.ingest.ChineseSemanticSplitter;
 import com.rag.knowledge.app.ingest.ChunkOverride;
 import com.rag.knowledge.app.ingest.IngestService;
+import com.rag.knowledge.app.ingest.SegmentEditService;
 import com.rag.knowledge.common.ApiResponse;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.db.DocumentRepository;
@@ -39,11 +40,14 @@ public class DocumentController {
     private final IngestService ingestService;
     private final DocumentRepository documents;
     private final SegmentRepository segments;
+    private final SegmentEditService segmentEdit;
 
-    public DocumentController(IngestService ingestService, DocumentRepository documents, SegmentRepository segments) {
+    public DocumentController(IngestService ingestService, DocumentRepository documents, SegmentRepository segments,
+                              SegmentEditService segmentEdit) {
         this.ingestService = ingestService;
         this.documents = documents;
         this.segments = segments;
+        this.segmentEdit = segmentEdit;
     }
 
     public record DocumentView(
@@ -181,6 +185,28 @@ public class DocumentController {
         }
         return ApiResponse.ok(Map.of("documentId", id, "segmentId", segmentId, "available", available),
                 available ? "块已恢复检索" : "块已从检索中排除");
+    }
+
+    public record SegmentContentBody(String content, Boolean reembed) {
+    }
+
+    /**
+     * 改一块的正文。`reembed` 默认 true：正文改了向量还是旧的，检索会按旧文字排序、界面却显示新文字。
+     * 模型服务不在线时正文照样存下来，返回体用 embedded/note 说清向量这一步走到哪了。
+     */
+    @PutMapping("/{id}/segments/{segmentId}/content")
+    public ApiResponse<SegmentEditService.EditResult> editSegment(@PathVariable long id,
+                                                                 @PathVariable long segmentId,
+                                                                 @RequestBody SegmentContentBody body) {
+        boolean reembed = body.reembed() == null || body.reembed();
+        return ApiResponse.ok(segmentEdit.edit(id, segmentId, body.content(), reembed));
+    }
+
+    /** 给单块补算向量：编辑时模型没起来、或换了 embedding 模型之后手工点回来。 */
+    @PostMapping("/{id}/segments/{segmentId}/reembed")
+    public ApiResponse<SegmentEditService.EditResult> reembedSegment(@PathVariable long id,
+                                                                    @PathVariable long segmentId) {
+        return ApiResponse.ok(segmentEdit.reembed(id, segmentId));
     }
 
     @PostMapping("/{id}/reindex")

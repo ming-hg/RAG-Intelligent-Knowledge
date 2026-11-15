@@ -76,7 +76,16 @@ export interface SegmentView {
   charEnd: number | null
   available: boolean
   embStatus: string
+  /** 人工改过正文：charStart/charEnd 说的仍是编辑前那份正文里的位置。 */
+  edited: boolean
   hitCount: number
+}
+
+/** PUT/POST 单块编辑的返回：note 不是错误，是「正文存下了、向量走到哪一步」。 */
+export interface SegmentEditResult {
+  segment: SegmentView
+  embedded: boolean
+  note: string | null
 }
 
 export interface PreviewBlock {

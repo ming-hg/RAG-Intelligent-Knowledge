@@ -85,6 +85,7 @@ CREATE TABLE kb_segment (
     embedding       vector(${embedding_dim}),
     embedding_model text,
     emb_status      text         NOT NULL DEFAULT 'PENDING',
+    edited_at       timestamptz,   -- 人工编辑过正文的时刻；非空即 char_start/char_end 描述的是编辑前的位置
     available       boolean      NOT NULL DEFAULT true,
     hit_count       integer      NOT NULL DEFAULT 0,
     questions       text[],

@@ -5,6 +5,7 @@ import type {
   ChunkPreview,
   DocumentSummary,
   DocumentView,
+  SegmentEditResult,
   SegmentView,
   UploadResult,
 } from '@/types/api'
@@ -52,6 +53,12 @@ export const documentsApi = {
       `/documents/${id}/segments/${segmentId}`,
       { available },
     ),
+
+  editSegment: (id: number, segmentId: number, content: string, reembed: boolean) =>
+    http.put<SegmentEditResult>(`/documents/${id}/segments/${segmentId}/content`, { content, reembed }),
+
+  reembedSegment: (id: number, segmentId: number) =>
+    http.post<SegmentEditResult>(`/documents/${id}/segments/${segmentId}/reembed`),
 
   // reparse 是后端的 @RequestParam，不是请求体，只能拼在 URL 上
   reindex: (id: number, reparse = false) =>

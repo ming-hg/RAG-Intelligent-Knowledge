@@ -10,8 +10,8 @@
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5c 已落地 |
-| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5c 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c 已落地 |
+| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
 | `docs` | 方案、ADR、硬性约束、接入手册 |
@@ -41,12 +41,18 @@ curl -X PUT -H "Content-Type: application/json" \
   -d '{"childChars":260,"childMinChars":null,"overlapChars":null,"parentMaxChars":null,"parentChild":null}' \
   http://localhost:8080/api/documents/1/chunk-config
 curl -X POST "http://localhost:8080/api/documents/1/reindex?reparse=false"
+
+# 7) 只改其中一块的正文：旧向量当场作废，reembed=false 就只改文字、下次再补算
+curl -X PUT -H "Content-Type: application/json" \
+  -d '{"content":"把解析弄乱的表格手工订正一遍","reembed":true}' \
+  http://localhost:8080/api/documents/1/segments/12/content
+curl -X POST http://localhost:8080/api/documents/1/segments/12/reembed
 ```
 
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 154 例）：
+不连数据库也能验证的代码层测试（当前 170 例）：
 
 ```bash
 cd rag-api && mvn -o test
