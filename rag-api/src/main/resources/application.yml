@@ -1,0 +1,87 @@
+server:
+  port: ${RAG_API_PORT:8080}
+
+spring:
+  application:
+    name: rag-api
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:rag_knowledge}
+    username: ${POSTGRES_USER:rag}
+    password: ${POSTGRES_PASSWORD:rag_local_dev}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+    # embedding 列维度是 schema 的一部分，必须与 rag.embedding.dim 同源，否则启动校验会报错
+    placeholders:
+      embedding_dim: ${RAG_EMBEDDING_DIM:768}
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 500MB
+      file-size-threshold: 2MB
+  mvc:
+    async:
+      # SSE 长连接不能被 MVC 层超时掐断，超时由业务层控制
+      request-timeout: -1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+rag:
+  lm-studio:
+    # 本机部署：http://localhost:1234/v1
+    # LM Studio 在另一台机器：http://<那台机器的局域网IP>:1234/v1
+    #   需在那台机器打开 LM Studio → Local Server → 「Serve on Local Network」，并放行其防火墙入站 TCP 1234
+    # 注意：baseUrl 必须以 /v1 结尾（代码里会自动补齐，但配置文件仍建议写全）
+    base-url: ${LM_STUDIO_BASE_URL:http://192.168.1.61:1234/v1}
+    # LM Studio 未开鉴权，占位串即可；若启用了 API Token 再用环境变量覆盖
+    api-key: ${LM_STUDIO_API_KEY:lm-studio}
+    # 模型名必须与 /v1/models 返回的 id 逐字符一致：LM Studio 对认不出的名字不报错，
+    # 会用当前已加载的模型应答（实测 192.168.1.61 传错 id 也返回 200），静默换模型比报错更难查
+    chat-model: ${LM_STUDIO_CHAT_MODEL:qwen2.5-vl-7b-instruct}
+    embedding-model: ${LM_STUDIO_EMBEDDING_MODEL:text-embedding-bge-base-zh-v1.5}
+    temperature: 0.3
+    top-p: 0.8
+    timeout: 90s
+    max-retries: 1
+  storage:
+    dir: ${RAG_STORAGE_DIR:./storage}
+  embedding:
+    # 实测 text-embedding-bge-base-zh-v1.5 返回 768 维；该机的 nomic-embed-text-v1.5 同样是 768 维，
+    # 维度相同时换模型不会改变 schema，但向量空间不互通，会污染检索
+    dim: ${RAG_EMBEDDING_DIM:768}
+    # 实测 16 条一批 0.41s、单条 0.04s，16 是吞吐与超时的折中起点
+    batch-size: ${RAG_EMBEDDING_BATCH_SIZE:16}
+  ingest:
+    worker-enabled: ${RAG_INGEST_WORKER:true}
+    poll-interval: 2s
+    # 租约：worker 崩溃后任务最多卡这么久就会被重新排队
+    lease-duration: 10m
+    max-attempts: 3
+    # 单机单卡：并发 >1 不会更快，只会让 embedding 排队并撞超时
+    concurrency: ${RAG_INGEST_CONCURRENCY:1}
+    max-file-size-mb: 100
+    allowed-extensions: pdf,docx,doc,md,markdown,txt,csv,json,html,htm
+    chunk:
+      # child-chars 的上限来自 embedding 模型窗口（512 token ≈ 400 汉字）：
+      # 调大不会报错，但超出部分被模型静默截断，表现为「文档里明明有却搜不到」
+      child-chars: 400
+      child-min-chars: 120
+      overlap-chars: 60
+      parent-max-chars: 1200
+      parent-child: true
+
+logging:
+  level:
+    com.rag.knowledge: INFO
+    dev.langchain4j: INFO
+  pattern:
+    correlation: "[%X{traceId:-}] "

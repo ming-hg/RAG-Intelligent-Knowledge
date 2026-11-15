@@ -1,1 +1,21 @@
 node_modules
+
+# Java
+target/
+*.class
+*.jar.original
+
+# 运行期数据（不入库）
+storage/
+rag-api/storage/
+rag-server/temp/
+rag-server/data/
+rag-server/chroma-data/
+
+# 本地环境
+deploy/.env
+.env
+*.log
+.idea/
+.vscode/
+*.iml
