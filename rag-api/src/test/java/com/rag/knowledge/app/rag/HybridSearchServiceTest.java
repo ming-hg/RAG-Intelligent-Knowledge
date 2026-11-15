@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.rag;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.RetrievalRepository;
@@ -31,6 +32,7 @@ class HybridSearchServiceTest {
     private static final int DIM = 4;
 
     private final RetrievalRepository repository = mock(RetrievalRepository.class);
+    private final RunDiagnostics diagnostics = new RunDiagnostics();
 
     @Test
     void hybridIsTheDefaultAndCarriesBothPathsIntoTheQuery() {
@@ -65,6 +67,23 @@ class HybridSearchServiceTest {
         assertThat(query.mode()).isEqualTo(RetrievalMode.KEYWORD);
         assertThat(query.threshold()).isEqualTo(RagProperties.Retrieval.defaults().minRrfScore());
         assertThat(query.docIds()).containsExactly(3L);
+        // 静默降级要在 /api/diagnostics 里看得见：两个计数各记一件事，向量路没走成 + 模型出过故障
+        assertThat(diagnostics.snapshot().counters().vectorDegraded()).isEqualTo(1);
+        assertThat(diagnostics.snapshot().counters().embeddingFailures()).isEqualTo(1);
+        assertThat(diagnostics.snapshot().lastVectorFailure().reason()).contains("Connection refused");
+    }
+
+    @Test
+    void silentModeSwitchWithoutAnyExceptionStillCountsAsDegraded() {
+        when(repository.probeEngine()).thenReturn(KeywordEngine.NONE);
+        HybridSearchService service = service(vecOk(), RagProperties.Retrieval.defaults());
+
+        HybridSearchService.Outcome outcome = service.search("问题", List.of(1L), null, "hybrid", null);
+
+        // 没有异常抛出来，日志里也就没有 stacktrace——这一条是「结果照常返回但换了量纲」的唯一痕迹
+        assertThat(outcome.effective()).isEqualTo(RetrievalMode.VECTOR);
+        assertThat(diagnostics.snapshot().counters().vectorDegraded()).isEqualTo(1);
+        assertThat(diagnostics.snapshot().counters().embeddingFailures()).isZero();
     }
 
     @Test
@@ -167,7 +186,7 @@ class HybridSearchServiceTest {
     }
 
     private HybridSearchService service(EmbeddingModel embeddingModel, RagProperties.Retrieval retrieval) {
-        return new HybridSearchService(repository, embeddingModel, props(retrieval));
+        return new HybridSearchService(repository, embeddingModel, props(retrieval), diagnostics);
     }
 
     private static RagProperties props(RagProperties.Retrieval retrieval) {

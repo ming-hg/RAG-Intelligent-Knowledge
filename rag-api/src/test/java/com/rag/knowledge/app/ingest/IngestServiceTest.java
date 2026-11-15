@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.ingest;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.app.ingest.TikaDocumentParser.Parsed;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
@@ -58,6 +59,7 @@ class IngestServiceTest {
     private final FileStorage storage = mock(FileStorage.class);
     private final TikaDocumentParser parser = mock(TikaDocumentParser.class);
     private final SegmentIndexPublisher publisher = mock(SegmentIndexPublisher.class);
+    private final RunDiagnostics diagnostics = new RunDiagnostics();
     private final ObjectMapper json = JsonMapper.builder().build();
 
     @Test
@@ -500,7 +502,7 @@ class IngestServiceTest {
                         List.of("pdf", "docx", "md", "txt"), RagProperties.Chunk.defaults()),
                 RagProperties.Retrieval.defaults(), RagProperties.Archive.defaults());
         return new IngestService(props, knowledgeBases, documents, tasks, storage, parser,
-                chunkSplitter, embeddingModel, publisher, json);
+                chunkSplitter, embeddingModel, publisher, json, diagnostics);
     }
 
     private void stubStoredText(String cleaned) {

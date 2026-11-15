@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.ingest;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.DocumentRepository;
@@ -43,6 +44,7 @@ class SegmentEditServiceTest {
 
     private final DocumentRepository documents = mock(DocumentRepository.class);
     private final SegmentRepository segments = mock(SegmentRepository.class);
+    private final RunDiagnostics diagnostics = new RunDiagnostics();
     private final StubEmbedding embeddingModel = new StubEmbedding();
 
     @Test
@@ -218,7 +220,7 @@ class SegmentEditServiceTest {
                 new RagProperties.Embedding(DIM, 2),
                 RagProperties.Ingest.defaults(), RagProperties.Retrieval.defaults(),
                 RagProperties.Archive.defaults());
-        return new SegmentEditService(documents, segments, embeddingModel, props);
+        return new SegmentEditService(documents, segments, embeddingModel, props, diagnostics);
     }
 
     /** 只实现 embedAll 的最小模型：记录送进去的文字，按需返回指定维度或直接失败。 */

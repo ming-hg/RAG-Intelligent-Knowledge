@@ -308,6 +308,8 @@ const CHAT_QUESTION = '数据库备份保留多少天？请给出出处。'
 
 const uploads = []
 let kbId = opt.kb
+/** 问答的 meta 帧留着给第 10 步对照：SSE 说的降级/截断，计数端点必须也说。 */
+let lastChatMeta = null
 
 async function main() {
   console.log(`目标后端：${opt.base}`)
@@ -324,6 +326,7 @@ async function main() {
   await stepDisableSegment()
   if (opt.archive) await stepArchive()
   else skip('归档导出 / 删除 / 导入', '未带 --archive（该步骤会删除该库全部文档再导回来）')
+  await stepDiagnostics()
 
   const seconds = ((Date.now() - startedAt) / 1000).toFixed(1)
   console.log(`\n${'═'.repeat(64)}`)
@@ -342,12 +345,14 @@ async function stepHealth() {
     const env = await api('GET', '/health', { params: opt.models ? { models: 'true' } : undefined })
     assert(env.data.ready === true, `ready=${env.data.ready}`)
     const probes = env.data.probes ?? []
-    assert(probes.some((p) => p.name === 'database'), '探针里没有 database')
+    const names = probes.map((p) => p.name)
+    // 探针名字是后端契约的一部分：postgres 不在就等于连不上库，后面全是空跑
+    assert(names.includes('postgres'), `探针里没有 postgres：${names.join(',')}`)
     for (const p of probes) console.log(`         · ${p.name} ${p.status} ${p.detail ?? ''}`)
     if (opt.models) {
-      for (const p of probes.filter((x) => x.name === 'chat' || x.name === 'embedding')) {
-        assert(p.status !== 'DOWN', `${p.name} 探针 DOWN：${p.detail}`)
-      }
+      const modelProbes = probes.filter((p) => /chat|embedding/.test(p.name))
+      assert(modelProbes.length >= 2, `带 models=true 却只有 ${modelProbes.map((p) => p.name).join(',')} 两个模型探针都没跑`)
+      for (const p of modelProbes) assert(p.status !== 'DOWN', `${p.name} 探针 DOWN：${p.detail}`)
     }
     return `${probes.length} 个探针`
   })
@@ -567,7 +572,8 @@ async function stepChat() {
     assert(names[0] === 'meta', `首个事件是 ${names[0]}，不是 meta：${names.slice(0, 4).join('>')}`)
     assert(names[names.length - 1] === 'done' || err, `末个事件是 ${names.at(-1)}，没收到 done`)
     assert(names.filter((n) => n === 'delta').length > 0, '一个 delta 都没有')
-    meta = events.find((e) => e.event === 'meta')?.payload
+    meta = events.find((e) => e.event === 'meta')?.payload ?? null
+    lastChatMeta = meta
     done = events.find((e) => e.event === 'done')?.payload
     answer = events.filter((e) => e.event === 'delta').map((e) => e.payload?.text ?? '').join('')
     return `${names.length} 事件（delta ${names.filter((n) => n === 'delta').length} 段）` +
@@ -733,6 +739,64 @@ async function stepArchive() {
     const off = (segs.data ?? []).filter((s) => !s.available)
     assert(off.length > 0, '导入把 available=false 洗回了 true：人工意图是数据的一部分（ADR-018）')
     return `${restored.name} 里 ${off.length} 块仍为禁用`
+  })
+}
+
+/**
+ * 第 10 步：把整轮跑完的「安静失败」计数拿出来对账。
+ * vectorDegraded>0 意味着前面第 5 步那批 rrf 分数是关键词路给的，整批检索结论都不作数——
+ * 这一条放在最后，是因为它判的是「刚才那 9 步可不可信」。
+ */
+async function stepDiagnostics() {
+  step('10 运行诊断对账')
+  let view = null
+  await check('GET /diagnostics 形状', async () => {
+    let env
+    try {
+      env = await api('GET', '/diagnostics')
+    } catch (err) {
+      if (err instanceof ApiError && (err.code === 404 || err.code === 405)) {
+        return skip('GET /diagnostics', '这个后端没有 /api/diagnostics（真后端 2.0 起才有；mock 没有）')
+      }
+      throw err
+    }
+    view = env.data
+    assert(view.run?.counters, `缺 run.counters：${JSON.stringify(view).slice(0, 120)}`)
+    for (const key of ['vectorDegraded', 'contextTruncated', 'refused', 'embeddingFailures']) {
+      assert(typeof view.run.counters[key] === 'number', `counters.${key} 不是数字`)
+    }
+    for (const key of ['mode', 'topK', 'embeddingDim', 'contextBudgetChars', 'nCtx']) {
+      assert(view.effective?.[key] !== undefined, `effective 缺 ${key}`)
+    }
+    assert(Array.isArray(view.warnings), 'warnings 不是数组')
+    return `uptime ${view.run.uptimeSeconds}s · 生效 ${view.effective.mode}/topK=${view.effective.topK}` +
+      ` · 预算 ${view.effective.contextBudgetChars} 字`
+  })
+  if (!view) return
+  await check('这一轮没有偷偷走降级路（vectorDegraded=0）', () => {
+    const c = view.run.counters
+    assert(c.vectorDegraded === 0,
+      `向量路降级 ${c.vectorDegraded} 次，最后一次：${view.run.lastVectorFailure?.reason ?? '未记录'}` +
+      '｜ 第 5 步的 rrf 分数就不是混合检索给的，这一批检索结论别要')
+    assert(c.embeddingFailures === 0,
+      `embedding 调用失败 ${c.embeddingFailures} 次，最后一次：${view.run.lastEmbeddingFailure?.reason ?? '未记录'}`)
+    return `降级 0 / 截断 ${c.contextTruncated} / 拒答 ${c.refused}`
+  })
+  await check('SSE meta 与计数端点说的是同一件事', () => {
+    if (!lastChatMeta) return skip('SSE meta 对账', '第 7 步没拿到 meta 帧')
+    if (lastChatMeta.contextTruncated === true) {
+      assert(view.run.counters.contextTruncated >= 1,
+        'meta 说上下文截断了，diagnostics 却记 0：截断这条路径没接到计数器')
+    }
+    if (lastChatMeta.degraded === true) {
+      assert(view.run.counters.vectorDegraded >= 1,
+        `meta 说 degraded=true（${lastChatMeta.vectorFailure ?? ''}），diagnostics 却记 0：降级没计数`)
+    }
+    return `meta truncated=${lastChatMeta.contextTruncated} degraded=${lastChatMeta.degraded} ｜ 一致`
+  })
+  await check('参数自检 warnings 为空', () => {
+    assert(view.warnings.length === 0, `后端自己认为配置有问题：${view.warnings.join(' ／ ')}`)
+    return '无'
   })
 }
 

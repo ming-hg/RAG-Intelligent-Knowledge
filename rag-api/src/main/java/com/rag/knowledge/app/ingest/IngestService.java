@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.ingest;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.app.ingest.TikaDocumentParser.Parsed;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
@@ -49,11 +50,12 @@ public class IngestService {
     private final EmbeddingModel embeddingModel;
     private final SegmentIndexPublisher publisher;
     private final ObjectMapper json;
+    private final RunDiagnostics diagnostics;
 
     public IngestService(RagProperties props, KnowledgeBaseRepository knowledgeBases, DocumentRepository documents,
                          TaskRepository tasks, FileStorage storage, TikaDocumentParser parser,
                          ChineseSemanticSplitter splitter, EmbeddingModel embeddingModel,
-                         SegmentIndexPublisher publisher, ObjectMapper json) {
+                         SegmentIndexPublisher publisher, ObjectMapper json, RunDiagnostics diagnostics) {
         this.props = props;
         this.knowledgeBases = knowledgeBases;
         this.documents = documents;
@@ -64,6 +66,7 @@ public class IngestService {
         this.embeddingModel = embeddingModel;
         this.publisher = publisher;
         this.json = json;
+        this.diagnostics = diagnostics;
     }
 
     /** 单库起步：没有库就建默认库，维度与当前配置对齐。 */
@@ -314,15 +317,26 @@ public class IngestService {
             List<TextSegment> texts = searchable.subList(from, to).stream()
                     .map(segment -> TextSegment.from(segment.content()))
                     .toList();
-            Response<List<Embedding>> response = embeddingModel.embedAll(texts);
+            Response<List<Embedding>> response;
+            try {
+                response = embeddingModel.embedAll(texts);
+            } catch (RuntimeException ex) {
+                // 这次失败最终会变成「文档 FAILED」，但要翻到文档列表才看得见；诊断端点上一个数就能回答「刚刚模型出过问题吗」
+                diagnostics.embeddingFailure("文档 " + docId + " 向量化失败：" + message(ex));
+                throw ex;
+            }
             List<Embedding> batch = response.content();
             if (batch.size() != texts.size()) {
+                diagnostics.embeddingFailure("文档 " + docId + " 批量向量化返回 " + batch.size() + " 条，提交 "
+                        + texts.size() + " 条");
                 throw new IllegalStateException("embedding 返回 " + batch.size() + " 条，提交 " + texts.size()
                         + " 条：模型服务在批量请求下行为异常，尝试调小 rag.embedding.batch-size");
             }
             for (int i = 0; i < batch.size(); i++) {
                 Embedding embedding = batch.get(i);
                 if (embedding.dimension() != props.embedding().dim()) {
+                    diagnostics.embeddingFailure("文档 " + docId + " 返回 " + embedding.dimension() + " 维向量，配置是 "
+                            + props.embedding().dim());
                     throw new PermanentIngestException("DIM_MISMATCH", "模型返回 " + embedding.dimension()
                             + " 维，配置是 " + props.embedding().dim()
                             + " ｜ 处理建议: 检查 LM_STUDIO_EMBEDDING_MODEL 与 rag.embedding.dim 是否配套");

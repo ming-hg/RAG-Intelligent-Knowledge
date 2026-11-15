@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.rag;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.RetrievalRepository;
@@ -26,13 +27,16 @@ public class HybridSearchService {
     private final RetrievalRepository retrieval;
     private final EmbeddingModel embeddingModel;
     private final RagProperties props;
+    private final RunDiagnostics diagnostics;
 
     private volatile KeywordEngine engine;
 
-    public HybridSearchService(RetrievalRepository retrieval, EmbeddingModel embeddingModel, RagProperties props) {
+    public HybridSearchService(RetrievalRepository retrieval, EmbeddingModel embeddingModel, RagProperties props,
+                              RunDiagnostics diagnostics) {
         this.retrieval = retrieval;
         this.embeddingModel = embeddingModel;
         this.props = props;
+        this.diagnostics = diagnostics;
     }
 
     /**
@@ -62,17 +66,27 @@ public class HybridSearchService {
                 vectorLiteral = embed(question);
             } catch (RuntimeException ex) {
                 vectorFailure = rootMessage(ex);
+                diagnostics.embeddingFailure(vectorFailure);
                 log.warn("查询向量计算失败，本次检索降级为关键词路：{}", vectorFailure);
             }
         }
 
         RetrievalMode effective = effectiveMode(settings.mode(), vectorLiteral != null, available.available());
         if (effective == null) {
+            diagnostics.vectorDegraded("向量路与关键词路都不可用");
             return new Outcome(settings.mode(), settings.mode(), available,
                     vectorFailure == null
                             ? "向量路与关键词路都不可用：库内没有已生成向量的块，且数据库没有可用的中文全文能力"
                             : vectorFailure,
                     List.of(), System.currentTimeMillis() - start);
+        }
+        if (effective != settings.mode() || vectorFailure != null) {
+            diagnostics.vectorDegraded(vectorFailure != null ? vectorFailure
+                    : "请求 " + settings.mode() + "，实际只走 " + effective);
+            if (vectorFailure == null) {
+                // 没有异常也照样降级的情形最难发现：结果照常返回，只是分数来自另一套量纲
+                log.warn("检索实际生效模式 {}（请求 {}），engine={}", effective, settings.mode(), available);
+            }
         }
         double threshold = effective.effectiveThreshold(settings.minScore(), settings.minRrfScore());
         RetrievalQuery query = new RetrievalQuery(List.copyOf(kbIds),

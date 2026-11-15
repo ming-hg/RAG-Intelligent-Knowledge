@@ -11,7 +11,7 @@
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d/M5f/M6 已落地 |
 | `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c/M5d 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `start.sh` / `stop.sh` / `smoke.sh` 与 `docker-compose.yml`、自建的 zhparser PG 镜像 |
@@ -32,6 +32,11 @@ deploy/stop.sh            # 停；--keep-db 只停应用，--purge-data 才会�
 默认不破坏数据；加 `--archive` 才会删掉该库全部文档再导回来（归档「免重算」只能这么验）；
 `--shape-only` 只验接口契约，用来在没库没模型的环境（包括那份前端联调用的 mock）自检脚本自身。
 退出码：0 全绿 / 1 有失败 / 2 连不上后端或 node 版本不够（需要 20.19+ 或 22.12+）。
+最后一步会拿 `/api/diagnostics` 与问答的 `meta` 帧对账：`vectorDegraded` 不为 0 时，前面那批 rrf 分数是关键词路
+给的，整批检索结论都不作数——这一条判的正是「刚才那些步骤可不可信」。
+
+日志看 `deploy/logs/rag-api.log`（logback 滚动，UTF-8）：向量降级、上下文截断、无证据拒答这三类「请求成功但结果可疑」
+的事件都以 WARN 单独成行，行首带 traceId；`rag-api.out` 只有启动失败（JDK / jar）那一段。
 
 下面是等价的手工步骤，脚本任一步卡住时可以逐条对照：
 
@@ -47,6 +52,9 @@ cd rag-web && npm ci && npm run dev    # http://localhost:5173
 
 # 4) 自检：分层报告 PG / chat / embedding，models=true 时校验模型名回显
 curl "http://localhost:8080/api/health?models=true"
+
+# 4b) 运行诊断：这一轮有没有偷偷降级/截断/拒答，加上当前真正生效的参数与配置自检
+curl "http://localhost:8080/api/diagnostics"
 
 # 5) 上传一份文档，然后轮询进度直到 status=READY
 curl -F "file=@../docs/重构方案.md" http://localhost:8080/api/documents
@@ -77,7 +85,7 @@ curl -F "file=@kb-1-20261115-213000.zip" "http://localhost:8080/api/knowledge-ba
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 202 例）：
+不连数据库也能验证的代码层测试（当前 208 例）：
 
 ```bash
 cd rag-api && mvn -o test

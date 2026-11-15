@@ -92,7 +92,8 @@ else
     die "打包失败" "上面是编译错误；离线模式要求本地仓库已有全部依赖，联网时去掉 -o 可补齐"
   jar=$(ls rag-api/target/rag-api-*.jar 2>/dev/null | grep -v '\.original$' | head -1)
   [ -n "$jar" ] || die "没找到可执行 jar" "预期 rag-api/target/rag-api-*.jar，先手工跑一次 mvn -o -DskipTests package"
-  nohup java -jar "$jar" >"$LOG_DIR/rag-api.log" 2>&1 &
+  # 应用日志由 logback 滚动写到 rag-api.log；这里只收 stdout/stderr，装的是「logback 还没来得及起来」那一段
+  nohup java -jar "$jar" >"$LOG_DIR/rag-api.out" 2>&1 &
   echo $! >"$LOG_DIR/rag-api.pid"
   echo "   pid $(cat "$LOG_DIR/rag-api.pid") · 日志 deploy/logs/rag-api.log"
 fi
@@ -107,6 +108,7 @@ for _ in $(seq 1 60); do
 done
 [ -n "$ready" ] || die "rag-api 120 秒内没就绪" \
   "日志：deploy/logs/rag-api.log（端口冲突、连不上 PG、维度不符都在这里看得见）" \
+  "进程根本没起来时看 deploy/logs/rag-api.out（JDK 版本、jar 缺失写在那里）" \
   "自检详情：curl \"$API/api/health?models=true\""
 
 step "3/4 rag-web"
@@ -143,6 +145,7 @@ cat <<EOF
 下一步（连库实测按 docs/实测指导.md 从 §5 开始）：
   deploy/smoke.sh                 # 一条命令跑完上传→检索→问答的回归，不用手点
   deploy/smoke.sh --archive       # 再加归档导出/删除/导入（会删该库全部文档再导回来）
+  curl $API/api/diagnostics       # 刚刚有没有偷偷降级/截断/拒答，以及现在生效的是哪套参数
   手工验证的话：上传 samples/01-运维手册.md，等 status=READY，再问「数据库备份保留多少天」——
   答案里应当出现 35 天，引用指向那篇文档的第 2 节。
 EOF

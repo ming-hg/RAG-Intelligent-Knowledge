@@ -113,4 +113,17 @@ logging:
     com.rag.knowledge: INFO
     dev.langchain4j: INFO
   pattern:
+    # 一次问答横跨 HTTP 线程与 rag-chat-* 线程，没有这个前缀就只能靠时间戳猜哪几行是同一次
     correlation: "[%X{traceId:-}] "
+  file:
+    # 降级/截断/拒答的 WARN 要在进程退出之后还查得到，所以落文件；deploy/start.sh 把控制台另写到 rag-api.out
+    name: ${RAG_LOG_FILE:deploy/logs/rag-api.log}
+  charset:
+    # 文件固定 UTF-8：中文日志用 GBK 写出来，换台机器或拉进编辑器就是一堆乱码，而排障正是要看那句中文
+    file: UTF-8
+  logback:
+    rollingpolicy:
+      # 单文件 20MB、留 14 天、总量封顶 500MB：本地机器不该被自己的日志撑满硬盘
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 500MB

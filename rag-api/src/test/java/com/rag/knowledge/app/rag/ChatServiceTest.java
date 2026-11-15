@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.rag;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.ChatRepository;
@@ -55,6 +56,7 @@ class ChatServiceTest {
     private final RetrievalRepository retrieval = mock(RetrievalRepository.class);
     private final HybridSearchService searchService = mock(HybridSearchService.class);
     private final StreamingChatModel streamingModel = mock(StreamingChatModel.class);
+    private final RunDiagnostics diagnostics = new RunDiagnostics();
     private final ObjectMapper json = JsonMapper.builder().build();
 
     private final RecordingSink sink = new RecordingSink();
@@ -86,6 +88,22 @@ class ChatServiceTest {
         verify(chats).finishAnswer(ANSWER_ID, AnswerPrompt.NO_EVIDENCE, ChatService.STATUS_REFUSED, null, null, null);
         verifyNoModelCall();
         verify(retrieval, never()).touchHits(anyList());
+        // 拒答单独计数：一轮实测里 refused 涨得比预期多，说明阈值或分块出了问题，而不是模型不行
+        assertThat(diagnostics.snapshot().counters().refused()).isEqualTo(1);
+    }
+
+    @Test
+    void contextTruncationIsCountedAndSaysSoInTheMetaFrame() {
+        stubSession();
+        stubSearch(List.of(hit(11, "长".repeat(3000))));
+        stubAnswerRow();
+        generate("答");
+
+        service().ask(request("这一轮的正文比预算还长"), sink);
+
+        assertThat(sink.meta.contextTruncated()).isTrue();
+        assertThat(diagnostics.snapshot().counters().contextTruncated()).isEqualTo(1);
+        assertThat(diagnostics.snapshot().counters().refused()).isZero();
     }
 
     @Test
@@ -312,7 +330,7 @@ class ChatServiceTest {
 
     private ChatService service() {
         return new ChatService(chats, knowledgeBases, retrieval, searchService, new ContextPlanner(),
-                streamingModel, props(), json);
+                streamingModel, props(), json, diagnostics);
     }
 
     private static RagProperties props() {

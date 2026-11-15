@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.ingest;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.DocumentRepository;
@@ -35,13 +36,15 @@ public class SegmentEditService {
     private final SegmentRepository segments;
     private final EmbeddingModel embeddingModel;
     private final RagProperties props;
+    private final RunDiagnostics diagnostics;
 
     public SegmentEditService(DocumentRepository documents, SegmentRepository segments,
-                              EmbeddingModel embeddingModel, RagProperties props) {
+                              EmbeddingModel embeddingModel, RagProperties props, RunDiagnostics diagnostics) {
         this.documents = documents;
         this.segments = segments;
         this.embeddingModel = embeddingModel;
         this.props = props;
+        this.diagnostics = diagnostics;
     }
 
     /**
@@ -102,12 +105,17 @@ public class SegmentEditService {
             Response<Embedding> response = embeddingModel.embed(segment.content());
             Embedding vector = response.content();
             if (vector.dimension() != props.embedding().dim()) {
+                String reason = "文档 " + docId + " 的块 " + segment.chunkNo() + " 返回 " + vector.dimension()
+                        + " 维向量，与 rag.embedding.dim=" + props.embedding().dim() + " 不符";
+                diagnostics.embeddingFailure(reason);
+                log.warn("补算向量被拒：{}", reason);
                 return new EditResult(segment, false, "向量维度 " + vector.dimension() + "，与配置的 "
                         + props.embedding().dim() + " 不一致，没有写入：先核对 LM_STUDIO_EMBEDDING_MODEL 与 rag.embedding.dim");
             }
             segments.setEmbedding(docId, segment.id(), SegmentRepository.toVectorLiteral(vector.vector()),
                     props.lmStudio().embeddingModel());
         } catch (RuntimeException e) {
+            diagnostics.embeddingFailure(e.getMessage());
             log.warn("文档 {} 的块 {} 补算向量失败：{}", docId, segment.chunkNo(), e.getMessage());
             return new EditResult(segment, false, "正文已保存，向量没算出来：" + e.getMessage()
                     + " ｜ 关键词检索已经能用这一条，等模型服务可用时点「重算向量」");

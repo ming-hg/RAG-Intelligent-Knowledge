@@ -29,6 +29,8 @@ public class ChatExecutorConfig {
         pool.setMaxPoolSize(CONCURRENT_STREAMS);
         pool.setQueueCapacity(WAITING_ROOM);
         pool.setThreadNamePrefix("rag-chat-");
+        // 流式跑在这个池上，不把 traceId 带过去，一次问答的日志会断成两截
+        pool.setTaskDecorator(new MdcTaskDecorator());
         // 关闭时给在跑的流一点时间收尾，否则每次重启都会留下一堆 INTERRUPTED 却没有半句解释
         pool.setWaitForTasksToCompleteOnShutdown(true);
         pool.setAwaitTerminationSeconds(20);

@@ -6,6 +6,7 @@ import com.rag.knowledge.db.TaskRepository.Task;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
@@ -85,7 +86,13 @@ public class IngestWorker {
                 continue;
             }
             for (Task task : claimed) {
-                ingestService.process(task, owner);
+                // worker 线程没有 HTTP 请求可挂 traceId；用任务 id 造一个，同一次入库的多行日志才认得出彼此
+                MDC.put("traceId", "t" + task.id());
+                try {
+                    ingestService.process(task, owner);
+                } finally {
+                    MDC.remove("traceId");
+                }
             }
         }
     }

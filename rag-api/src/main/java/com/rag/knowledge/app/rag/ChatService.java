@@ -1,5 +1,6 @@
 package com.rag.knowledge.app.rag;
 
+import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.ChatRepository;
@@ -52,10 +53,11 @@ public class ChatService {
     private final StreamingChatModel streamingModel;
     private final RagProperties props;
     private final ObjectMapper json;
+    private final RunDiagnostics diagnostics;
 
     public ChatService(ChatRepository chats, KnowledgeBaseRepository knowledgeBases, RetrievalRepository retrieval,
                        HybridSearchService searchService, ContextPlanner planner, StreamingChatModel streamingModel,
-                       RagProperties props, ObjectMapper json) {
+                       RagProperties props, ObjectMapper json, RunDiagnostics diagnostics) {
         this.chats = chats;
         this.knowledgeBases = knowledgeBases;
         this.retrieval = retrieval;
@@ -64,6 +66,7 @@ public class ChatService {
         this.streamingModel = streamingModel;
         this.props = props;
         this.json = json;
+        this.diagnostics = diagnostics;
     }
 
     public record AskRequest(UUID sessionId, String question, List<Long> kbIds, List<Long> docIds,
@@ -130,7 +133,8 @@ public class ChatService {
         UUID questionId = chats.insertQuestion(session.id(), question, traceId);
         chats.nameFromFirstQuestion(session.id(), question);
 
-        HybridSearchService.Outcome outcome = searchService.search(question, scopeKbIds(request, session),
+        List<Long> scopedKbIds = scopeKbIds(request, session);
+        HybridSearchService.Outcome outcome = searchService.search(question, scopedKbIds,
                 request.docIds(), request.mode(), request.topK());
         RagProperties.Budget budget = props.retrieval().budget();
         List<ChatRepository.Message> recent = trimHistory(history, budget);
@@ -149,7 +153,18 @@ public class ChatService {
                 outcome.tookMs());
         sink.meta(meta);
 
+        if (plan.truncated()) {
+            diagnostics.contextTruncated();
+            // 截断只会让答案「少了后半段」，用户以为是模型能力问题；这里必须留下一条能对上的记录
+            log.warn("上下文被预算截断 answerId={} usedChars={} budgetChars={} 召回={} 未装下={}",
+                    answerId, plan.usedChars(), plan.budgetChars(), outcome.hits().size(), plan.unplacedHits());
+        }
         if (plan.empty()) {
+            diagnostics.refused();
+            // 拒答的原因只有两种：库里真的没有 / 检索这路没走成。分不开就得靠猜，所以两条都打进日志
+            log.warn("无证据拒答 answerId={} 问题=「{}」kbIds={} 请求模式={} 实际模式={} engine={} 命中={} 预算={} 字",
+                    answerId, brief(question), scopedKbIds, outcome.requested(), outcome.effective(),
+                    outcome.engine(), outcome.hits().size(), plan.budgetChars());
             // 没有资料就不问模型：固定话术直接返回，状态记成 REFUSED，评测时能与「答错」区分开
             chats.finishAnswer(answerId, AnswerPrompt.NO_EVIDENCE, STATUS_REFUSED, null, null, null);
             sink.delta(AnswerPrompt.NO_EVIDENCE);
@@ -302,6 +317,12 @@ public class ChatService {
     private static String hints(RagException ex) {
         List<String> hints = ex.hints().stream().filter(Objects::nonNull).toList();
         return hints.isEmpty() ? "" : " ｜ " + String.join(" ｜ ", hints);
+    }
+
+    /** 日志里只留问题开头：整段粘贴进来的文本会把这一行挤成没人会读的一块砖。 */
+    private static String brief(String text) {
+        String flat = text.replaceAll("\\s+", " ");
+        return flat.length() <= 40 ? flat : flat.substring(0, 40) + "…";
     }
 
     private static String rootMessage(Throwable ex) {
