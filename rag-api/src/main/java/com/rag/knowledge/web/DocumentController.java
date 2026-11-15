@@ -1,6 +1,7 @@
 package com.rag.knowledge.web;
 
 import com.rag.knowledge.app.ingest.ChineseSemanticSplitter;
+import com.rag.knowledge.app.ingest.ChunkOverride;
 import com.rag.knowledge.app.ingest.IngestService;
 import com.rag.knowledge.common.ApiResponse;
 import com.rag.knowledge.common.RagException;
@@ -14,6 +15,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
@@ -146,6 +149,25 @@ public class DocumentController {
                                                       @RequestParam(defaultValue = "30") int limit) {
         return ApiResponse.ok(ingestService.preview(id, childChars, childMinChars, overlapChars,
                 parentMaxChars, parentChild, limit));
+    }
+
+    /**
+     * 这篇文档的分块参数现状：覆盖、全局默认、真正生效的那组值。
+     * 覆盖只影响将来怎么切，已入库的那一代不变——生效要等一次重新入库。
+     */
+    @GetMapping("/{id}/chunk-config")
+    public ApiResponse<IngestService.ChunkConfigView> chunkConfig(@PathVariable long id) {
+        return ApiResponse.ok(ingestService.chunkConfig(id));
+    }
+
+    /** 整份替换覆盖：没给的键即「不覆盖」，全部等于默认时清空。 */
+    @PutMapping("/{id}/chunk-config")
+    public ApiResponse<IngestService.ChunkConfigView> setChunkConfig(@PathVariable long id,
+                                                                     @RequestBody(required = false)
+                                                                     ChunkOverride body) {
+        IngestService.ChunkConfigView view = ingestService.setChunkConfig(id, body);
+        return ApiResponse.ok(view, view.override().isEmpty()
+                ? "已恢复跟随全局默认，重新入库后生效" : "覆盖已保存，重新入库后生效");
     }
 
     /** 块级禁用/恢复：只动 available，检索谓词固定带这个条件，立刻生效且完全可逆。 */

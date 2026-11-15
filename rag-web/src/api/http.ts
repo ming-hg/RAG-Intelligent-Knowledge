@@ -105,6 +105,18 @@ export const http = {
       options,
     ),
 
+  /** PUT 的覆盖类接口把「字段为 null」当作业务语义（这项不覆盖），所以 body 必须原样序列化，不能剔空键。 */
+  put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+    requestJson<T>(
+      path,
+      {
+        method: 'PUT',
+        headers: body === undefined ? undefined : JSON_HEADERS,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+      options,
+    ),
+
   patch: <T>(path: string, params?: Record<string, QueryValue>, options?: RequestOptions) =>
     requestJson<T>(`${path}${queryString(params)}`, { method: 'PATCH' }, options),
 

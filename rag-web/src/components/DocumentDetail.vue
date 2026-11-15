@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { documentsApi, type ChunkParams } from '@/api/documents'
-import type { DocumentView, PreviewBlock, SegmentView } from '@/types/api'
+import type { ChunkConfigView, ChunkOverride, DocumentView, PreviewBlock, SegmentView } from '@/types/api'
 
 const props = defineProps<{ docId: number | null; focusSegment?: number | null }>()
 
@@ -11,15 +11,13 @@ const doc = ref<DocumentView | null>(null)
 const segments = ref<SegmentView[]>([])
 const content = ref('')
 const preview = ref<{ blocks: PreviewBlock[]; totalBlocks: number; searchableBlocks: number } | null>(null)
-const params = ref<ChunkParams>({
-  childChars: 400,
-  childMinChars: 120,
-  overlapChars: 60,
-  parentMaxChars: 1200,
-  parentChild: true,
-})
+const chunk = ref<ChunkConfigView | null>(null)
+const params = ref<ChunkParams>({})
+const saving = ref(false)
 const busy = ref(false)
 const tab = ref<'segments' | 'content' | 'preview'>('segments')
+
+const hasOverride = computed(() => Object.values(chunk.value?.override ?? {}).some((value) => value !== null))
 
 watch(
   () => props.docId,
@@ -28,12 +26,20 @@ watch(
     content.value = ''
     preview.value = null
     doc.value = null
+    chunk.value = null
     if (!id) return
     busy.value = true
     try {
-      const [detail, rows] = await Promise.all([documentsApi.detail(id), documentsApi.segments(id, false, 500)])
+      const [detail, rows, config] = await Promise.all([
+        documentsApi.detail(id),
+        documentsApi.segments(id, false, 500),
+        documentsApi.chunkConfig(id),
+      ])
       doc.value = detail
       segments.value = rows
+      chunk.value = config
+      // 表单从「这篇文档真正生效的那组值」起步，而不是前端抄一份默认值：两边各抄一份迟早会飘
+      params.value = { ...config.effective }
       if (props.focusSegment) {
         await nextTick()
         root.value?.querySelector('.el-table__row.focus')?.scrollIntoView({ block: 'center' })
@@ -70,6 +76,40 @@ async function loadContent() {
 async function runPreview() {
   if (!doc.value) return
   preview.value = await documentsApi.preview(doc.value.id, params.value, 40)
+}
+
+const NO_OVERRIDE: ChunkOverride = {
+  childChars: null,
+  childMinChars: null,
+  overlapChars: null,
+  parentMaxChars: null,
+  parentChild: null,
+}
+
+/**
+ * PUT 是整份替换，五个键必须全给；等于全局的键由后端摘掉，界面不做这层判断。
+ * 存完按返回的 effective 回填表单：清空覆盖时正是这一步让界面立刻跟回全局值。
+ */
+async function saveOverride(override: ChunkOverride) {
+  if (!doc.value) return
+  saving.value = true
+  try {
+    chunk.value = await documentsApi.setChunkConfig(doc.value.id, override)
+    params.value = { ...chunk.value.effective }
+    ElMessage.success(hasOverride.value ? '覆盖已保存，重新入库后生效' : '已恢复跟随全局默认，重新入库后生效')
+  } finally {
+    saving.value = false
+  }
+}
+
+function saveFormAsOverride() {
+  saveOverride({
+    childChars: params.value.childChars ?? null,
+    childMinChars: params.value.childMinChars ?? null,
+    overlapChars: params.value.overlapChars ?? null,
+    parentMaxChars: params.value.parentMaxChars ?? null,
+    parentChild: params.value.parentChild ?? null,
+  })
 }
 
 const pct = (progress: number) => `${progress}%`
@@ -134,17 +174,29 @@ const pct = (progress: number) => `${progress}%`
         </el-tab-pane>
 
         <el-tab-pane label="分块预览" name="preview">
+          <p class="row chunk-source">
+            <span class="tag" :class="hasOverride ? 'ok' : ''">{{
+              hasOverride ? '这篇文档有自己的覆盖' : '跟随全局默认'
+            }}</span>
+            <span class="muted">重切只是预览；改完参数点「存为本文档覆盖」，再回列表点「重算」才会重新分块入库。</span>
+          </p>
           <div class="row tuning">
-            <label>子块字数</label>
-            <el-input-number v-model="params.childChars" :min="100" :max="2000" size="small" />
+            <label title="超过 400 字不会报错，bge 的 512 token 窗口会把多出来的部分静默截断，表现为文档里有但搜不到">
+              子块字数
+            </label>
+            <el-input-number v-model="params.childChars" :min="50" :max="4000" size="small" />
             <label>子块下限</label>
-            <el-input-number v-model="params.childMinChars" :min="0" :max="1000" size="small" />
+            <el-input-number v-model="params.childMinChars" :min="1" :max="4000" size="small" />
             <label>重叠</label>
-            <el-input-number v-model="params.overlapChars" :min="0" :max="500" size="small" />
+            <el-input-number v-model="params.overlapChars" :min="0" :max="4000" size="small" />
             <label>父块上限</label>
-            <el-input-number v-model="params.parentMaxChars" :min="200" :max="4000" size="small" />
+            <el-input-number v-model="params.parentMaxChars" :min="50" :max="4000" size="small" />
             <el-checkbox v-model="params.parentChild">父子块</el-checkbox>
             <el-button size="small" type="primary" @click="runPreview">重切</el-button>
+            <el-button size="small" :loading="saving" @click="saveFormAsOverride">存为本文档覆盖</el-button>
+            <el-button v-if="hasOverride" size="small" :loading="saving" @click="saveOverride(NO_OVERRIDE)">
+              恢复全局默认
+            </el-button>
           </div>
 
           <div v-if="preview" class="row preview-summary">
@@ -208,6 +260,12 @@ const pct = (progress: number) => `${progress}%`
   border-radius: 8px;
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+.chunk-source {
+  margin: 0 0 6px;
+  gap: 8px;
+  font-size: 12px;
 }
 
 .tuning {

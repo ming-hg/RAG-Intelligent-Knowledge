@@ -10,8 +10,8 @@
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a 已落地 |
-| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5c 已落地 |
+| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5c 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
 | `docs` | 方案、ADR、硬性约束、接入手册 |
@@ -34,12 +34,19 @@ curl "http://localhost:8080/api/health?models=true"
 # 5) 上传一份文档，然后轮询进度直到 status=READY
 curl -F "file=@../docs/重构方案.md" http://localhost:8080/api/documents
 curl http://localhost:8080/api/documents
+
+# 6) 这篇文档想换分块尺寸：五个键全给（null = 跟随全局默认），覆盖只在下次「重算」时生效
+curl http://localhost:8080/api/documents/1/chunk-config
+curl -X PUT -H "Content-Type: application/json" \
+  -d '{"childChars":260,"childMinChars":null,"overlapChars":null,"parentMaxChars":null,"parentChild":null}' \
+  http://localhost:8080/api/documents/1/chunk-config
+curl -X POST "http://localhost:8080/api/documents/1/reindex?reparse=false"
 ```
 
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 137 例）：
+不连数据库也能验证的代码层测试（当前 154 例）：
 
 ```bash
 cd rag-api && mvn -o test

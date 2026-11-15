@@ -1,5 +1,13 @@
 import { http } from './http'
-import type { ChunkPreview, DocumentSummary, DocumentView, SegmentView, UploadResult } from '@/types/api'
+import type {
+  ChunkConfigView,
+  ChunkOverride,
+  ChunkPreview,
+  DocumentSummary,
+  DocumentView,
+  SegmentView,
+  UploadResult,
+} from '@/types/api'
 
 // 用 type 而不是 interface：http.get 的参数是 Record<string, QueryValue>，
 // interface 没有隐式索引签名，传进去会在类型层被拒。
@@ -32,6 +40,12 @@ export const documentsApi = {
 
   preview: (id: number, params: ChunkParams, limit = 30) =>
     http.get<ChunkPreview>(`/documents/${id}/chunks/preview`, { ...params, limit }),
+
+  chunkConfig: (id: number) => http.get<ChunkConfigView>(`/documents/${id}/chunk-config`),
+
+  // PUT 是整份替换：五个键全给，null 表示这项跟随全局，后端不会替你保留上一次的覆盖
+  setChunkConfig: (id: number, override: ChunkOverride) =>
+    http.put<ChunkConfigView>(`/documents/${id}/chunk-config`, override),
 
   setSegmentAvailable: (id: number, segmentId: number, available: boolean) =>
     http.patch<{ documentId: number; segmentId: number; available: boolean }>(

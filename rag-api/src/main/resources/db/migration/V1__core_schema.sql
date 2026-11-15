@@ -55,7 +55,7 @@ CREATE TABLE kb_document (
     version        integer       NOT NULL DEFAULT 1,
     index_version  integer       NOT NULL DEFAULT 1,
     available      boolean       NOT NULL DEFAULT true,
-    chunk_override jsonb,
+    chunk_override jsonb,     -- 只存与全局 rag.ingest.chunk 不同的那几个键；NULL = 完全跟随默认，改它要重算才生效
     created_at     timestamptz   NOT NULL DEFAULT now(),
     updated_at     timestamptz   NOT NULL DEFAULT now(),
     parsed_at      timestamptz,

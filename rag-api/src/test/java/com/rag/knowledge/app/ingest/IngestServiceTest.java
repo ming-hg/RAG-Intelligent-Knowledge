@@ -17,6 +17,8 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,6 +35,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -55,6 +58,7 @@ class IngestServiceTest {
     private final FileStorage storage = mock(FileStorage.class);
     private final TikaDocumentParser parser = mock(TikaDocumentParser.class);
     private final SegmentIndexPublisher publisher = mock(SegmentIndexPublisher.class);
+    private final ObjectMapper json = JsonMapper.builder().build();
 
     @Test
     void uploadRejectsUnsupportedExtensionBeforeTouchingAnything() {
@@ -272,7 +276,7 @@ class IngestServiceTest {
         verify(documents, atLeast(4)).updateStage(eq(DOC_ID), any(), progress.capture(), messages.capture());
         // 进度只能往前走，最后一步固定是「写入索引」的 88
         assertThat(progress.getAllValues()).isSorted().endsWith(88);
-        assertThat(messages.getAllValues()).contains("语义分块");
+        assertThat(messages.getAllValues()).anyMatch(message -> message.startsWith("语义分块 子块 "));
         assertThat(messages.getAllValues()).anyMatch(message -> message.startsWith("向量化 "));
     }
 
@@ -368,11 +372,125 @@ class IngestServiceTest {
                 .hasMessageContaining("parent>=child");
     }
 
+    @Test
+    void ingestSplitsWithTheDocumentsOwnChunkOverride() {
+        when(documents.findById(DOC_ID)).thenReturn(Optional.of(document(DocStatus.READY, 3,
+                "{\"childChars\":200}")));
+        when(knowledgeBases.require(KB_ID)).thenReturn(kb(DIM));
+        when(documents.content(DOC_ID)).thenReturn(sampleText());
+        when(publisher.publish(anyLong(), anyLong(), anyInt(), any(), anyInt(), any(), any()))
+                .thenReturn(new SegmentIndexPublisher.Result(6, 0));
+        ChineseSemanticSplitter splitter = spy(new ChineseSemanticSplitter());
+
+        service(splitter, embeddings(DIM)).process(task("{}"), OWNER);
+
+        ChineseSemanticSplitter.ChunkConfig config = capturedChunkConfig(splitter);
+        assertThat(config.childChars()).isEqualTo(200);
+        // 覆盖里没写的键必须继续跟着全局默认，否则「只改一个参数」会变成「顺手重置另外四个」
+        assertThat(config.childMinChars()).isEqualTo(120);
+        assertThat(config.overlapChars()).isEqualTo(60);
+        assertThat(config.parentMaxChars()).isEqualTo(1200);
+        assertThat(config.parentChild()).isTrue();
+    }
+
+    @Test
+    void previewFallsBackToTheOverrideBeforeTheGlobalDefaults() {
+        when(documents.findById(DOC_ID)).thenReturn(Optional.of(document(DocStatus.READY, 3,
+                "{\"childChars\":200,\"overlapChars\":20}")));
+        when(documents.content(DOC_ID)).thenReturn(sampleText());
+        ChineseSemanticSplitter splitter = spy(new ChineseSemanticSplitter());
+        IngestService service = service(splitter, embeddings(DIM));
+
+        service.preview(DOC_ID, null, null, null, null, null, 10);
+        assertThat(capturedChunkConfig(splitter).childChars()).isEqualTo(200);
+
+        // 本次请求显式给的值优先，否则预览永远试不出「不保存的情况下换参数」
+        service.preview(DOC_ID, 320, null, null, null, null, 10);
+        ChineseSemanticSplitter.ChunkConfig requested = capturedConfigs(splitter).get(1);
+        assertThat(requested.childChars()).isEqualTo(320);
+        assertThat(requested.overlapChars()).isEqualTo(20);
+    }
+
+    /** 覆盖列是 jsonb，手改过的库完全可能写成坏 JSON；这不该让一篇文档永远入不了库。 */
+    @Test
+    void aCorruptOverrideFallsBackToGlobalInsteadOfFailingTheIngest() {
+        when(documents.findById(DOC_ID)).thenReturn(Optional.of(document(DocStatus.READY, 3, "{这不是 json")));
+        when(knowledgeBases.require(KB_ID)).thenReturn(kb(DIM));
+        when(documents.content(DOC_ID)).thenReturn(sampleText());
+        when(publisher.publish(anyLong(), anyLong(), anyInt(), any(), anyInt(), any(), any()))
+                .thenReturn(new SegmentIndexPublisher.Result(6, 0));
+        ChineseSemanticSplitter splitter = spy(new ChineseSemanticSplitter());
+
+        service(splitter, embeddings(DIM)).process(task("{}"), OWNER);
+
+        assertThat(capturedChunkConfig(splitter).childChars()).isEqualTo(400);
+        verify(tasks).finish(100L, OWNER);
+    }
+
+    @Test
+    void setChunkConfigStoresOnlyTheKeysThatDifferFromGlobal() {
+        when(documents.findById(DOC_ID)).thenReturn(Optional.of(document(DocStatus.READY, 3)));
+        when(documents.setChunkOverride(anyLong(), any())).thenReturn(1);
+        IngestService service = service();
+
+        IngestService.ChunkConfigView sameAsGlobal = service.setChunkConfig(DOC_ID,
+                new ChunkOverride(400, 120, 60, 1200, true));
+        ArgumentCaptor<String> cleared = ArgumentCaptor.forClass(String.class);
+        verify(documents).setChunkOverride(eq(DOC_ID), cleared.capture());
+        // 全部等于默认就写 NULL：列里留一份和默认一样的快照，改了全局默认之后它就是过期的假覆盖
+        assertThat(cleared.getValue()).isNull();
+        assertThat(sameAsGlobal.override().isEmpty()).isTrue();
+        assertThat(sameAsGlobal.effective().childChars()).isEqualTo(400);
+
+        service.setChunkConfig(DOC_ID, new ChunkOverride(600, null, null, null, null));
+        ArgumentCaptor<String> stored = ArgumentCaptor.forClass(String.class);
+        verify(documents, atLeast(2)).setChunkOverride(eq(DOC_ID), stored.capture());
+        String json = stored.getAllValues().get(stored.getAllValues().size() - 1);
+        assertThat(json).contains("\"childChars\":600").doesNotContain("childMinChars").doesNotContain("overlapChars");
+    }
+
+    /** 覆盖只写了一部分时，越界要按「合并之后」的完整参数判，而不是只看传进来的那个键。 */
+    @Test
+    void setChunkConfigRejectsValuesThatOnlyBreakAfterMergingWithGlobal() {
+        when(documents.findById(DOC_ID)).thenReturn(Optional.of(document(DocStatus.READY, 3)));
+        IngestService service = service();
+
+        assertThatThrownBy(() -> service.setChunkConfig(DOC_ID, new ChunkOverride(null, 500, null, null, null)))
+                .isInstanceOf(RagException.class)
+                .hasMessageContaining("分块参数不合理");
+        verify(documents, never()).setChunkOverride(anyLong(), any());
+    }
+
+    @Test
+    void setChunkConfigReportsNotFoundForADocumentThatIsGone() {
+        when(documents.findById(DOC_ID)).thenReturn(Optional.of(document(DocStatus.READY, 3)));
+        when(documents.setChunkOverride(DOC_ID, null)).thenReturn(0);
+
+        assertThatThrownBy(() -> service().setChunkConfig(DOC_ID, ChunkOverride.EMPTY))
+                .isInstanceOf(RagException.class)
+                .hasMessageContaining("文档不存在");
+    }
+
+    private ChineseSemanticSplitter.ChunkConfig capturedChunkConfig(ChineseSemanticSplitter splitter) {
+        return capturedConfigs(splitter).get(0);
+    }
+
+    private List<ChineseSemanticSplitter.ChunkConfig> capturedConfigs(ChineseSemanticSplitter splitter) {
+        ArgumentCaptor<ChineseSemanticSplitter.ChunkConfig> captor =
+                ArgumentCaptor.forClass(ChineseSemanticSplitter.ChunkConfig.class);
+        verify(splitter, atLeast(1)).split(any(), captor.capture());
+        return captor.getAllValues();
+    }
+
     private IngestService service() {
         return service(embeddings(DIM));
     }
 
     private IngestService service(EmbeddingModel embeddingModel) {
+        return service(new ChineseSemanticSplitter(), embeddingModel);
+    }
+
+    private IngestService service(ChineseSemanticSplitter chunkSplitter, EmbeddingModel embeddingModel) {
         RagProperties props = new RagProperties(
                 new RagProperties.LmStudio("http://localhost:1234/v1", "lm-studio", "qwen2.5-vl-7b-instruct",
                         "bge-base-zh-v1.5", 0.3, 0.8, null, Duration.ofSeconds(5), 1),
@@ -382,7 +500,7 @@ class IngestServiceTest {
                         List.of("pdf", "docx", "md", "txt"), RagProperties.Chunk.defaults()),
                 RagProperties.Retrieval.defaults());
         return new IngestService(props, knowledgeBases, documents, tasks, storage, parser,
-                new ChineseSemanticSplitter(), embeddingModel, publisher);
+                chunkSplitter, embeddingModel, publisher, json);
     }
 
     private void stubStoredText(String cleaned) {
@@ -416,8 +534,12 @@ class IngestServiceTest {
     }
 
     private static Document document(DocStatus status, int version) {
+        return document(status, version, null);
+    }
+
+    private static Document document(DocStatus status, int version, String chunkOverride) {
         return new Document(DOC_ID, KB_ID, "重构方案.md", "sha", FILE_PATH, 1024L, "text/markdown",
-                null, null, status, 0, null, version, 11, null, null);
+                null, null, status, 0, null, version, 11, null, null, chunkOverride);
     }
 
     private static String sampleText() {

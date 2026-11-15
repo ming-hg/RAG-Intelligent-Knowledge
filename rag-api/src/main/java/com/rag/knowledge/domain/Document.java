@@ -19,7 +19,9 @@ public record Document(
         int version,
         int indexVersion,
         String errorCode,
-        String errorMsg) {
+        String errorMsg,
+        /** kb_document.chunk_override 的原始 jsonb 文本，可能为 NULL；解析归 app 层，这里只负责带着它走。 */
+        String chunkOverride) {
 
     public boolean rerunnable() {
         return status != null && status.isRerunnable();

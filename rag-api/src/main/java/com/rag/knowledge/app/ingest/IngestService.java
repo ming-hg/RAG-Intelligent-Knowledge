@@ -18,6 +18,7 @@ import dev.langchain4j.model.output.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -47,11 +48,12 @@ public class IngestService {
     private final ChineseSemanticSplitter splitter;
     private final EmbeddingModel embeddingModel;
     private final SegmentIndexPublisher publisher;
+    private final ObjectMapper json;
 
     public IngestService(RagProperties props, KnowledgeBaseRepository knowledgeBases, DocumentRepository documents,
                          TaskRepository tasks, FileStorage storage, TikaDocumentParser parser,
                          ChineseSemanticSplitter splitter, EmbeddingModel embeddingModel,
-                         SegmentIndexPublisher publisher) {
+                         SegmentIndexPublisher publisher, ObjectMapper json) {
         this.props = props;
         this.knowledgeBases = knowledgeBases;
         this.documents = documents;
@@ -61,6 +63,7 @@ public class IngestService {
         this.splitter = splitter;
         this.embeddingModel = embeddingModel;
         this.publisher = publisher;
+        this.json = json;
     }
 
     /** 单库起步：没有库就建默认库，维度与当前配置对齐。 */
@@ -139,30 +142,55 @@ public class IngestService {
             throw RagException.conflict("文档「" + doc.name() + "」还没有可预览的正文",
                     "等入库到 READY 再预览；FAILED 时用 POST /api/documents/" + docId + "/reindex 重试");
         }
-        RagProperties.Chunk defaults = props.ingest().chunk();
-        int child = orDefault(childChars, defaults.childChars());
-        int min = orDefault(childMinChars, defaults.childMinChars());
-        int overlap = orDefault(overlapChars, defaults.overlapChars());
-        int parent = orDefault(parentMaxChars, defaults.parentMaxChars());
-        // 边界与 ChunkConfig 保持一致，否则预览会把 IllegalArgumentException 顶成 500
-        if (child < 50 || child > 4000 || min <= 0 || min > child || overlap < 0 || overlap >= child
-                || parent < child) {
-            throw RagException.badRequest("分块参数不合理：child-chars=" + child + "，child-min-chars=" + min
-                    + "，overlap-chars=" + overlap + "，parent-max-chars=" + parent
-                    + " ｜ 约束: 50<=child<=4000，0<min<=child，overlap<child，parent>=child"
-                    + "（子块超过 400 字会被 bge 的 512 token 窗口静默截断）");
-        }
-        List<ChineseSemanticSplitter.Segment> segments = splitter.split(cleaned,
-                new ChineseSemanticSplitter.ChunkConfig(child, min, overlap, parent,
-                        parentChild == null ? defaults.parentChild() : parentChild));
+        // 三层回退：本次请求的参数 > 这篇文档的覆盖 > 全局默认。预览要能试出「存成覆盖之后」的效果，所以中间那层不能跳。
+        ChunkOverride requested = new ChunkOverride(childChars, childMinChars, overlapChars, parentMaxChars,
+                parentChild);
+        ChineseSemanticSplitter.ChunkConfig config = requested.orElse(overrideOf(doc)).merged(props.ingest().chunk());
+        List<ChineseSemanticSplitter.Segment> segments = splitter.split(cleaned, config);
         int capped = Math.max(1, Math.min(limit, 200));
         long searchable = segments.stream().filter(ChineseSemanticSplitter.Segment::searchable).count();
         return new Preview(doc.pageCount() == null ? 1 : doc.pageCount(), segments.size(), (int) searchable,
                 segments.stream().limit(capped).toList());
     }
 
-    private static int orDefault(Integer value, int fallback) {
-        return value == null ? fallback : value;
+    /**
+     * 分块参数现状：这篇文档的覆盖、全局默认、以及真正生效的那组值。
+     * 前端表单要用 effective 起值，否则界面显示的是一处硬编码的默认，跟服务器配置对不对没人知道。
+     */
+    public record ChunkConfigView(ChunkOverride override, RagProperties.Chunk defaults,
+                                  ChineseSemanticSplitter.ChunkConfig effective) {
+    }
+
+    public ChunkConfigView chunkConfig(long docId) {
+        Document doc = documents.findById(docId)
+                .orElseThrow(() -> RagException.notFound("文档不存在：" + docId));
+        return viewOf(overrideOf(doc));
+    }
+
+    /**
+     * 整份替换这篇文档的分块覆盖：请求里没给的键就是「不覆盖」，全部等于默认时把列清成 NULL。
+     * 覆盖只改将来怎么分块，不动已入库的那一代——立刻重切会让正在检索的引用编号全部错位。
+     */
+    public ChunkConfigView setChunkConfig(long docId, ChunkOverride override) {
+        Document doc = documents.findById(docId)
+                .orElseThrow(() -> RagException.notFound("文档不存在：" + docId));
+        RagProperties.Chunk global = props.ingest().chunk();
+        ChunkOverride deltas = (override == null ? ChunkOverride.EMPTY : override).deltasAgainst(global);
+        // 先合并校验再落库：越界值必须由接口挡成 400，不能等 worker 分块时才炸
+        ChineseSemanticSplitter.ChunkConfig effective = deltas.merged(global);
+        if (documents.setChunkOverride(docId, deltas.write(json)) == 0) {
+            throw RagException.notFound("文档不存在或已删除：" + docId);
+        }
+        return new ChunkConfigView(deltas, global, effective);
+    }
+
+    private ChunkConfigView viewOf(ChunkOverride override) {
+        RagProperties.Chunk global = props.ingest().chunk();
+        return new ChunkConfigView(override, global, override.merged(global));
+    }
+
+    private ChunkOverride overrideOf(Document doc) {
+        return ChunkOverride.read(json, doc.chunkOverride());
     }
 
     private long enqueueIngest(long kbId, long docId, boolean reparse) {
@@ -240,8 +268,10 @@ public class IngestService {
                     "复用已解析正文 " + cleaned.length() + " 字");
         }
 
-        current = stage(docId, current, DocStatus.SPLITTING, 30, "语义分块");
-        List<ChineseSemanticSplitter.Segment> segments = splitter.split(cleaned, chunkConfig());
+        ChineseSemanticSplitter.ChunkConfig config = overrideOf(doc).merged(props.ingest().chunk());
+        current = stage(docId, current, DocStatus.SPLITTING, 30,
+                "语义分块 子块 " + config.childChars() + " / 父块 " + config.parentMaxChars() + " 字");
+        List<ChineseSemanticSplitter.Segment> segments = splitter.split(cleaned, config);
         if (segments.isEmpty()) {
             throw new PermanentIngestException("NO_SEGMENT", "分块后没有任何可入库文本块"
                     + " ｜ 处理建议: 检查文件是否只有图片或页眉页脚，或调小 rag.ingest.chunk.child-min-chars");
@@ -323,12 +353,6 @@ public class IngestService {
         }
         documents.updateStage(docId, to, progress, message);
         return to;
-    }
-
-    private ChineseSemanticSplitter.ChunkConfig chunkConfig() {
-        RagProperties.Chunk chunk = props.ingest().chunk();
-        return new ChineseSemanticSplitter.ChunkConfig(chunk.childChars(), chunk.childMinChars(),
-                chunk.overlapChars(), chunk.parentMaxChars(), chunk.parentChild());
     }
 
     private Duration backoff(Task task) {

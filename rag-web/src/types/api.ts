@@ -98,6 +98,34 @@ export interface ChunkPreview {
   blocks: PreviewBlock[]
 }
 
+/** 五个数字/布尔都可空：空 = 这一项跟随全局默认，不是 0 也不是 false。 */
+export interface ChunkOverride {
+  childChars: number | null
+  childMinChars: number | null
+  overlapChars: number | null
+  parentMaxChars: number | null
+  parentChild: boolean | null
+}
+
+/** 五个值都定下来的那组参数：后端 RagProperties.Chunk（全局默认）与 ChunkConfig（生效值）结构相同。 */
+export interface ChunkSettings {
+  childChars: number
+  childMinChars: number
+  overlapChars: number
+  parentMaxChars: number
+  parentChild: boolean
+}
+
+/**
+ * GET/PUT /api/documents/{id}/chunk-config 的返回。
+ * override 是库里存的差异，defaults 是全局配置，effective 才是这篇文档下次入库真正用的那组值。
+ */
+export interface ChunkConfigView {
+  override: ChunkOverride
+  defaults: ChunkSettings
+  effective: ChunkSettings
+}
+
 export interface SearchHit {
   rank: number
   segmentId: number

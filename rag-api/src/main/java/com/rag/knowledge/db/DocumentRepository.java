@@ -21,7 +21,8 @@ public class DocumentRepository {
 
     private static final String COLUMNS = """
             id, kb_id, name, sha256, file_path, file_size, mime, page_count, char_count,
-            status, progress, progress_msg, version, index_version, error_code, error_msg
+            status, progress, progress_msg, version, index_version, error_code, error_msg,
+            chunk_override::text AS chunk_override
             """;
 
     private static final RowMapper<Document> MAPPER = (ResultSet rs, int rowNum) -> new Document(
@@ -40,7 +41,8 @@ public class DocumentRepository {
             rs.getInt("version"),
             rs.getInt("index_version"),
             rs.getString("error_code"),
-            rs.getString("error_msg"));
+            rs.getString("error_msg"),
+            rs.getString("chunk_override"));
 
     private final JdbcTemplate jdbc;
 
@@ -108,6 +110,15 @@ public class DocumentRepository {
         jdbc.update("UPDATE kb_document SET content = ?, char_count = ?, page_count = ?,"
                 + " mime = COALESCE(?, mime), parsed_at = now(), updated_at = now() WHERE id = ?",
                 content, content.length(), pageCount, mime, id);
+    }
+
+    /**
+     * 写文档级分块覆盖。传 null 就是把列清回 NULL，即「这篇跟随全局默认」——
+     * 用空对象 {} 表达同一件事会让「没设过」和「设成全部等于默认」在库里长得一样。
+     */
+    public int setChunkOverride(long id, String json) {
+        return jdbc.update("UPDATE kb_document SET chunk_override = ?::jsonb, updated_at = now()"
+                + " WHERE id = ? AND deleted_at IS NULL", json, id);
     }
 
     public void updateStage(long id, DocStatus status, int progress, String progressMsg) {
