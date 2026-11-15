@@ -47,7 +47,7 @@ class HealthServiceTest {
                         embeddingModelName, 0.3, 0.8, null, Duration.ofSeconds(5), 1),
                 new RagProperties.Storage(storageDir.toString()),
                 new RagProperties.Embedding(dim, 16),
-                RagProperties.Ingest.defaults());
+                RagProperties.Ingest.defaults(), RagProperties.Retrieval.defaults());
     }
 
     private HealthService service(RagProperties props) {

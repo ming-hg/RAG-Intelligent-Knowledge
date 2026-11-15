@@ -60,6 +60,30 @@ rag:
     dim: ${RAG_EMBEDDING_DIM:768}
     # 实测 16 条一批 0.41s、单条 0.04s，16 是吞吐与超时的折中起点
     batch-size: ${RAG_EMBEDDING_BATCH_SIZE:16}
+  retrieval:
+    # hybrid=向量路与关键词路各取 candidate-k 条再做 RRF；换模式不会改数据库，只改排分方式
+    mode: ${RAG_RETRIEVAL_MODE:hybrid}
+    top-k: ${RAG_RETRIEVAL_TOP_K:6}
+    # 每路先取多少候选再融合：本地库小，40 已经覆盖绝大多数场景
+    candidate-k: 40
+    # RRF 平滑常数，业界惯例 60；改它等于改「第一名值多少」
+    rrf-k: 60
+    # 只在纯向量模式生效：相似度低于它宁可不答
+    min-score: 0.45
+    # 只在混合模式生效：RRF 分数量级是 0.01x，照抄 0.45 会把所有结果全滤掉（硬性约束 1）
+    min-rrf-score: 0.012
+    # 命中子块时把父块也带上：子块够准，父块够全
+    parent-context: true
+    budget:
+      # 当前 chat 模型加载后的真实窗口（实测 4096）。调大要同时在 LM Studio 里调 context
+      n-ctx: ${RAG_LLM_N_CTX:4096}
+      output-reserve-tokens: 700
+      # 系统提示词 + 引用说明 + 问题本身的字符预留
+      template-chars: 900
+      # 中文约 1 字 1 token，取 1.0 是故意保守
+      chars-per-token: 1.0
+      history-max-turns: 4
+      history-max-chars: 800
   ingest:
     worker-enabled: ${RAG_INGEST_WORKER:true}
     poll-interval: 2s

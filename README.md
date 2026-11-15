@@ -10,7 +10,7 @@
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3 已落地 |
 | `rag-web` | 前端，M4 重写为 Vue 3 + TS |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
@@ -33,10 +33,21 @@ curl -F "file=@../docs/重构方案.md" http://localhost:8080/api/documents
 curl http://localhost:8080/api/documents
 ```
 
-不连数据库也能验证的代码层测试（当前 78 例）：
+不连数据库也能验证的代码层测试（当前 124 例）：
 
 ```bash
 cd rag-api && mvn -o test
+```
+
+检索与问答（文档 `status=READY` 之后；`kbId` 由 `/api/knowledge-bases` 给出，必须显式指定）：
+
+```bash
+# 只看召回与引用来源，不生成
+curl "http://localhost:8080/api/search?q=怎么分块&kbId=1&topK=5"
+
+# 流式问答：事件序列 meta -> delta* -> done
+curl -N -H "Content-Type: application/json" -d '{"question":"这份文档怎么分块的？","kbIds":[1]}' \
+  http://localhost:8080/api/chat/ask
 ```
 
 真机模型链路校验（默认跳过，会把地址、模型名、维度、批量、流式一次验完）：

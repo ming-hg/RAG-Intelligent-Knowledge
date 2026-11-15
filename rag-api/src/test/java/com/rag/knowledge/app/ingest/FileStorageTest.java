@@ -120,7 +120,8 @@ class FileStorageTest {
                 new RagProperties.Storage(tempDir.toString()),
                 new RagProperties.Embedding(768, 16),
                 new RagProperties.Ingest(true, Duration.ofSeconds(2), Duration.ofMinutes(10), 3, 1, 100,
-                        List.of("pdf", "md"), RagProperties.Chunk.defaults()));
+                        List.of("pdf", "md"), RagProperties.Chunk.defaults()),
+                RagProperties.Retrieval.defaults());
         return new FileStorage(props);
     }
 }

@@ -1,0 +1,369 @@
+package com.rag.knowledge.app.rag;
+
+import com.rag.knowledge.common.RagException;
+import com.rag.knowledge.config.RagProperties;
+import com.rag.knowledge.db.ChatRepository;
+import com.rag.knowledge.db.KnowledgeBaseRepository;
+import com.rag.knowledge.db.RetrievalRepository;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.TokenUsage;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * 问答编排的事件顺序、落库时机与「空召回不发模型」这条底线。
+ * <p>
+ * 流式回调用 doAnswer 同步触发，这样断言能看到生成结束后的完整状态；RecordingSink 按顺序记事件，
+ * 因为前端就是按顺序消费的。
+ */
+class ChatServiceTest {
+
+    private static final UUID SESSION_ID = UUID.randomUUID();
+    private static final UUID QUESTION_ID = UUID.randomUUID();
+    private static final UUID ANSWER_ID = UUID.randomUUID();
+
+    private final ChatRepository chats = mock(ChatRepository.class);
+    private final KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
+    private final RetrievalRepository retrieval = mock(RetrievalRepository.class);
+    private final HybridSearchService searchService = mock(HybridSearchService.class);
+    private final StreamingChatModel streamingModel = mock(StreamingChatModel.class);
+    private final ObjectMapper json = JsonMapper.builder().build();
+
+    private final RecordingSink sink = new RecordingSink();
+
+    @Test
+    void emptyQuestionNeverReachesTheDatabase() {
+        ChatService service = service();
+
+        service.ask(new ChatService.AskRequest(SESSION_ID, "   ", null, null, null, null), sink);
+
+        assertThat(sink.events).containsExactly("error", "complete");
+        assertThat(sink.errorCode).isEqualTo(400);
+        verifyNoModelCall();
+        verify(chats, never()).insertQuestion(any(), anyString(), any());
+    }
+
+    @Test
+    void emptyRecallRefusesWithoutAskingTheModel() {
+        stubSession();
+        stubSearch(List.of());
+        stubAnswerRow();
+        ChatService service = service();
+
+        service.ask(request("网关超时怎么排查"), sink);
+
+        assertThat(sink.events).containsExactly("meta", "delta", "done", "complete");
+        assertThat(sink.delta).isEqualTo(AnswerPrompt.NO_EVIDENCE);
+        assertThat(sink.done.status()).isEqualTo(ChatService.STATUS_REFUSED);
+        verify(chats).finishAnswer(ANSWER_ID, AnswerPrompt.NO_EVIDENCE, ChatService.STATUS_REFUSED, null, null, null);
+        verifyNoModelCall();
+        verify(retrieval, never()).touchHits(anyList());
+    }
+
+    @Test
+    void historyIsReadBeforeTheQuestionIsStored() {
+        // 先写问题再取历史，本轮问题会被当成「上一轮」重复塞进 prompt，模型会答两遍
+        stubSession();
+        stubSearch(List.of());
+        stubAnswerRow();
+        ChatService service = service();
+
+        service.ask(request("第二个问题"), sink);
+
+        InOrder order = inOrder(chats);
+        order.verify(chats).listMessages(eq(SESSION_ID), anyInt());
+        order.verify(chats).insertQuestion(eq(SESSION_ID), eq("第二个问题"), any());
+        order.verify(chats).nameFromFirstQuestion(SESSION_ID, "第二个问题");
+        order.verify(chats).beginAnswer(any(), anyString(), anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void recalledBlocksBecomeNumberedCitationsInThePromptAndInMeta() {
+        stubSession();
+        stubSearch(List.of(hit(11, "子块正文")));
+        when(retrieval.parentContents(anyList())).thenReturn(Map.of(99L, "父块完整段落，比子块更适合让模型读。"));
+        stubAnswerRow();
+        generate("答案带引用 [1]");
+
+        ChatService service = service();
+        service.ask(request("父块会替换子块吗"), sink);
+
+        assertThat(sink.meta.sources()).hasSize(1);
+        assertThat(sink.meta.sources().get(0).citation()).isEqualTo(1);
+        assertThat(sink.meta.sources().get(0).parentExpanded()).isTrue();
+        assertThat(sink.meta.effectiveMode()).isEqualTo("HYBRID");
+
+        List<ChatMessage> messages = sentMessages();
+        assertThat(messages.get(0)).isInstanceOf(SystemMessage.class);
+        assertThat(((SystemMessage) messages.get(0)).text()).contains("[编号]");
+        UserMessage last = (UserMessage) messages.get(messages.size() - 1);
+        assertThat(last.singleText()).contains("[1] 手册.pdf").contains("父块完整段落").doesNotContain("子块正文");
+        assertThat(sink.done.status()).isEqualTo(ChatService.STATUS_OK);
+        verify(retrieval).touchHits(List.of(11L));
+    }
+
+    @Test
+    void sourcesAndRetrievalMetaAreStoredWithTheAnswerRow() {
+        stubSession();
+        stubSearch(List.of(hit(11, "一段可以引用的正文")));
+        stubAnswerRow();
+        generate("好");
+        ChatService service = service();
+
+        service.ask(request("存下来"), sink);
+
+        ArgumentCaptor<String> sources = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> meta = ArgumentCaptor.forClass(String.class);
+        verify(chats).beginAnswer(eq(SESSION_ID), eq(""), eq("存下来"), sources.capture(), meta.capture(), any());
+        assertThat(sources.getValue()).contains("\"citation\":1").contains("手册.pdf");
+        assertThat(meta.getValue()).contains("\"effectiveMode\":\"HYBRID\"").contains("\"usedBlocks\":1");
+    }
+
+    @Test
+    void previousTurnsAreReplayedIntoTheModelConversation() {
+        stubSession();
+        when(chats.listMessages(eq(SESSION_ID), anyInt())).thenReturn(List.of(
+                message("user", "上一轮的问题", "DONE"), message("assistant", "上一轮的回答", "OK")));
+        stubSearch(List.of(hit(11, "正文")));
+        stubAnswerRow();
+        generate("新答案");
+
+        service().ask(request("追问"), sink);
+
+        List<ChatMessage> messages = sentMessages();
+        assertThat(messages).hasSize(4);
+        assertThat(messages.get(1)).isInstanceOf(UserMessage.class);
+        assertThat(messages.get(2)).isInstanceOf(AiMessage.class);
+        assertThat(((AiMessage) messages.get(2)).text()).isEqualTo("上一轮的回答");
+    }
+
+    @Test
+    void partialAnswerIsKeptWhenTheModelDiesMidStream() {
+        stubSession();
+        stubSearch(List.of(hit(11, "正文")));
+        stubAnswerRow();
+        doAnswer(invocation -> {
+            StreamingChatResponseHandler handler = invocation.getArgument(1);
+            handler.onPartialResponse("已经吐出的");
+            handler.onError(new IllegalStateException("connection reset"));
+            return null;
+        }).when(streamingModel).chat(anyList(), any(StreamingChatResponseHandler.class));
+
+        service().ask(request("会断在哪"), sink);
+
+        assertThat(sink.events).containsExactly("meta", "delta", "error", "complete");
+        assertThat(sink.errorCode).isEqualTo(503);
+        assertThat(sink.errorMessage).contains("connection reset");
+        verify(chats).markAnswer(ANSWER_ID, "已经吐出的", ChatService.STATUS_INTERRUPTED);
+        verify(chats, never()).finishAnswer(eq(ANSWER_ID), anyString(), eq(ChatService.STATUS_OK), any(), any(),
+                any());
+    }
+
+    @Test
+    void sessionWithoutExplicitScopeSearchesItsOwnKnowledgeBase() {
+        when(chats.requireSession(SESSION_ID)).thenReturn(session(List.of(42L)));
+        when(chats.listMessages(eq(SESSION_ID), anyInt())).thenReturn(List.of());
+        stubSearch(List.of());
+        stubAnswerRow();
+
+        service().ask(request("库里有什么"), sink);
+
+        verify(searchService).search(eq("库里有什么"), eq(List.of(42L)), any(), any(), any());
+        verify(knowledgeBases, never()).ensureDefault(anyString(), anyString(), anyInt());
+    }
+
+    @Test
+    void newSessionFallsBackToTheDefaultKnowledgeBase() {
+        when(chats.createSession(anyString(), anyList())).thenReturn(session(List.of(1L)));
+        when(chats.listMessages(any(), anyInt())).thenReturn(List.of());
+        when(knowledgeBases.ensureDefault(anyString(), anyString(), anyInt()))
+                .thenReturn(new KnowledgeBaseRepository.KnowledgeBase(1L, "默认知识库", "bge", 768, 1));
+        stubSearch(List.of());
+        stubAnswerRow();
+
+        service().ask(new ChatService.AskRequest(null, "第一个问题", null, null, null, null), sink);
+
+        verify(chats).createSession(eq("新会话"), eq(List.of(1L)));
+        verify(searchService).search(eq("第一个问题"), eq(List.of(1L)), any(), any(), any());
+    }
+
+    @Test
+    void missingSessionIsReportedAsAnErrorEvent() {
+        when(chats.requireSession(SESSION_ID)).thenThrow(RagException.notFound("会话不存在或已删除：" + SESSION_ID));
+
+        service().ask(request("问题"), sink);
+
+        assertThat(sink.events).containsExactly("error", "complete");
+        assertThat(sink.errorCode).isEqualTo(404);
+        verifyNoModelCall();
+    }
+
+    @Test
+    void searchFailureKeepsItsHintsForTheUser() {
+        stubSession();
+        when(searchService.search(any(), anyList(), any(), any(), any()))
+                .thenThrow(RagException.conflict("模型没加载", "去 LM Studio 里加载 bge-base-zh"));
+
+        service().ask(request("问题"), sink);
+
+        assertThat(sink.events).containsExactly("error", "complete");
+        assertThat(sink.errorCode).isEqualTo(409);
+        assertThat(sink.errorMessage).contains("去 LM Studio 里加载 bge-base-zh");
+    }
+
+    @Test
+    void historyIsTrimmedFromTheOldestTurnAndRefusedAnswersAreDropped() {
+        ChatRepository.Message old = message("user", "很久以前的一长串问题".repeat(100), "DONE");
+        ChatRepository.Message refused = message("assistant", AnswerPrompt.NO_EVIDENCE, "REFUSED");
+        ChatRepository.Message fresh = message("user", "最近的问题", "DONE");
+
+        List<ChatRepository.Message> kept = ChatService.trimHistory(List.of(old, refused, fresh),
+                RagProperties.Budget.defaults());
+
+        assertThat(kept).containsExactly(fresh);
+        assertThat(ChatService.trimHistory(List.of(), RagProperties.Budget.defaults())).isEmpty();
+    }
+
+    private void stubSession() {
+        when(chats.requireSession(SESSION_ID)).thenReturn(session(List.of(1L)));
+        when(chats.listMessages(eq(SESSION_ID), anyInt())).thenReturn(List.of());
+        when(chats.insertQuestion(eq(SESSION_ID), anyString(), any())).thenReturn(QUESTION_ID);
+    }
+
+    private void stubSearch(List<SearchHit> hits) {
+        when(searchService.search(any(), anyList(), any(), any(), any())).thenReturn(
+                new HybridSearchService.Outcome(RetrievalMode.HYBRID, RetrievalMode.HYBRID,
+                        KeywordEngine.CHINESE_TSVECTOR, null, hits, 12L));
+    }
+
+    private void stubAnswerRow() {
+        when(chats.beginAnswer(any(), anyString(), anyString(), anyString(), anyString(), any()))
+                .thenReturn(ANSWER_ID);
+    }
+
+    private void generate(String answer) {
+        doAnswer(invocation -> {
+            StreamingChatResponseHandler handler = invocation.getArgument(1);
+            handler.onPartialResponse(answer);
+            handler.onCompleteResponse(ChatResponse.builder()
+                    .aiMessage(AiMessage.from(answer))
+                    .modelName("qwen2.5-vl-7b-instruct")
+                    .tokenUsage(new TokenUsage(120, 30))
+                    .build());
+            return null;
+        }).when(streamingModel).chat(anyList(), any(StreamingChatResponseHandler.class));
+    }
+
+    private List<ChatMessage> sentMessages() {
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(streamingModel).chat(captor.capture(), any(StreamingChatResponseHandler.class));
+        return captor.getValue();
+    }
+
+    private void verifyNoModelCall() {
+        verify(streamingModel, never()).chat(anyList(), any(StreamingChatResponseHandler.class));
+    }
+
+    private ChatService service() {
+        return new ChatService(chats, knowledgeBases, retrieval, searchService, new ContextPlanner(),
+                streamingModel, props(), json);
+    }
+
+    private static RagProperties props() {
+        return new RagProperties(
+                new RagProperties.LmStudio("http://localhost:1234/v1", "lm-studio", "chat", "bge",
+                        0.3, 0.8, null, Duration.ofSeconds(5), 1),
+                new RagProperties.Storage("target/rag-test"),
+                new RagProperties.Embedding(768, 16),
+                RagProperties.Ingest.defaults(),
+                RagProperties.Retrieval.defaults());
+    }
+
+    private static ChatRepository.Session session(List<Long> kbIds) {
+        return new ChatRepository.Session(SESSION_ID, "测试会话", kbIds, false, null, null);
+    }
+
+    private static ChatRepository.Message message(String role, String content, String status) {
+        return new ChatRepository.Message(UUID.randomUUID(), SESSION_ID, role, content, status, null, null, null,
+                null, null, null, null, null, null);
+    }
+
+    private static ChatService.AskRequest request(String question) {
+        return new ChatService.AskRequest(SESSION_ID, question, null, null, null, null);
+    }
+
+    private static SearchHit hit(long segmentId, String content) {
+        return new SearchHit(segmentId, 7, "手册.pdf", 3, 2, content, null, 2, 2, 0, content.length(), 99L,
+                1, 2, 0.032, 0.71);
+    }
+
+    /** 按顺序记录 sink 收到的一切，事件名顺序就是前端看到的顺序。 */
+    private static final class RecordingSink implements ChatService.Sink {
+
+        private final List<String> events = new ArrayList<>();
+        private ChatService.MetaView meta;
+        private ChatService.DoneView done;
+        private String delta;
+        private int errorCode;
+        private String errorMessage;
+
+        @Override
+        public void meta(ChatService.MetaView meta) {
+            events.add("meta");
+            this.meta = meta;
+        }
+
+        @Override
+        public void delta(String text) {
+            events.add("delta");
+            delta = delta == null ? text : delta + text;
+        }
+
+        @Override
+        public void done(ChatService.DoneView done) {
+            events.add("done");
+            this.done = done;
+        }
+
+        @Override
+        public void error(int code, String message) {
+            events.add("error");
+            errorCode = code;
+            errorMessage = message;
+        }
+
+        @Override
+        public void complete() {
+            events.add("complete");
+        }
+    }
+}

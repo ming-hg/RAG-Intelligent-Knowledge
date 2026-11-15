@@ -48,7 +48,7 @@ class LmStudioConnectivityIT {
                         EMBEDDING_MODEL, 0.3, 0.8, null, Duration.ofSeconds(90), 1),
                 new RagProperties.Storage("./storage"),
                 new RagProperties.Embedding(DIM, 16),
-                RagProperties.Ingest.defaults());
+                RagProperties.Ingest.defaults(), RagProperties.Retrieval.defaults());
     }
 
     private ModelService modelService(RagProperties props) {

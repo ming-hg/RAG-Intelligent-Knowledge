@@ -39,7 +39,7 @@ class ModelServiceTest {
                         "bge-base-zh-v1.5", 0.3, 0.8, null, Duration.ofSeconds(5), 1),
                 new RagProperties.Storage("./storage"),
                 new RagProperties.Embedding(dim, 16),
-                RagProperties.Ingest.defaults());
+                RagProperties.Ingest.defaults(), RagProperties.Retrieval.defaults());
     }
 
     private ModelService service(RagProperties props, ChatModel chat, EmbeddingModel embedding) {
