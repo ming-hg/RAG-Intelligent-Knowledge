@@ -14,11 +14,26 @@
 | `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d 已落地 |
 | `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c/M5d 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
-| `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
+| `deploy` | `start.sh` / `stop.sh` / `smoke.sh` 与 `docker-compose.yml`、自建的 zhparser PG 镜像 |
 | `samples` | 连库实测用的样本文档（事实写死，可当场判定对错） |
 | `docs` | 方案、ADR、硬性约束、接入手册 |
 
 ## 跑起来
+
+```bash
+cp .env.example .env      # 默认值就是本机实测环境；只改 LM_STUDIO_BASE_URL 与两个模型名
+deploy/start.sh           # 起 PG（首次编译 zhparser 镜像 5-15 分钟）→ 打包并起 rag-api → 起 rag-web → 自检门
+deploy/smoke.sh           # 端到端回归：health → 上传 samples → 等 READY → 三种模式检索 → 流式问答 → 块级禁用可逆
+deploy/stop.sh            # 停；--keep-db 只停应用，--purge-data 才会删数据卷（要输入 PURGE 确认）
+```
+
+脚本每一步失败都会停下并给出「去哪儿改什么」，Docker 引擎没起（Windows 虚拟化未开）时不会干等。
+`deploy/smoke.sh` 就是这条约定的产物：[docs/实测指导.md](docs/实测指导.md) §4~§10 那段手点验收，它一条命令跑完，全绿代表这批里程碑没退化。
+默认不破坏数据；加 `--archive` 才会删掉该库全部文档再导回来（归档「免重算」只能这么验）；
+`--shape-only` 只验接口契约，用来在没库没模型的环境（包括那份前端联调用的 mock）自检脚本自身。
+退出码：0 全绿 / 1 有失败 / 2 连不上后端或 node 版本不够（需要 20.19+ 或 22.12+）。
+
+下面是等价的手工步骤，脚本任一步卡住时可以逐条对照：
 
 ```bash
 # 1) 数据库（需要 Docker 引擎可用：Windows 上先确认 BIOS/WSL2 虚拟化已开）
