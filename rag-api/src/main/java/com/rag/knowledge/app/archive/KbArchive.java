@@ -31,8 +31,27 @@ public final class KbArchive {
         return "segments/" + slot + ".jsonl";
     }
 
+    /**
+     * 原始文件在包里的路径。名字由 slot + 文档名推导，两端各算一次而不是写进清单：
+     * 清单里存一个「包内路径」字段就等于多一处会和实际条目对不上的状态，而 zip 里没有那个条目时
+     * 导入端只会静默少一个文件，报错还看起来像包损坏。
+     */
     public static String fileEntry(int slot, String name) {
-        return "files/" + slot + "/" + name;
+        return "files/" + slot + "/" + safeFileName(name);
+    }
+
+    /** 去掉路径分隔符与控制字符：文档名来自用户，不能直接当包内路径用。 */
+    public static String safeFileName(String name) {
+        if (name == null || name.isBlank()) {
+            return "document";
+        }
+        String base = name.replace('\\', '/');
+        base = base.substring(base.lastIndexOf('/') + 1);
+        base = base.replaceAll("[\\p{Cntrl}\"*:<>?|]", "_").trim();
+        if (base.isEmpty() || ".".equals(base) || "..".equals(base)) {
+            return "document";
+        }
+        return base.length() > 160 ? base.substring(0, 160) : base;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -44,14 +63,9 @@ public final class KbArchive {
     public record Source(String name, String embeddingModel, int embeddingDim, int indexVersion) {
     }
 
-    /**
-     * {@code originalEntry} 是原始文件在包里的路径，没有带原始文件时为 null——导入端要靠它决定
-     * 「这篇能不能重新解析原文件」，所以不能只凭 slot 猜。
-     */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record DocEntry(int slot, String name, String sha256, String mime, Long fileSize, Integer pageCount,
-                           Integer charCount, int version, int segmentCount, ChunkOverride chunkOverride,
-                           String originalEntry) {
+                           Integer charCount, int version, int segmentCount, ChunkOverride chunkOverride) {
     }
 
     /**

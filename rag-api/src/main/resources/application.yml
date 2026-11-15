@@ -18,8 +18,10 @@ spring:
       embedding_dim: ${RAG_EMBEDDING_DIM:768}
   servlet:
     multipart:
-      max-file-size: 100MB
-      max-request-size: 500MB
+      # 512MB 是给「整库归档包」留的：768 维向量 base64 后每块约 4KB，几百篇文档就轻松过 100MB。
+      # 单个文档上传仍由 rag.ingest.max-file-size-mb 限制，改这里不会放宽论文/PDF 的尺寸。
+      max-file-size: 512MB
+      max-request-size: 640MB
       file-size-threshold: 2MB
   mvc:
     async:
@@ -102,6 +104,9 @@ rag:
       overlap-chars: 60
       parent-max-chars: 1200
       parent-child: true
+  archive:
+    # 导入端对包体积的第二道闸：容器只负责收字节，这里决定「这么大的包我们真的解不解」
+    max-import-mb: ${RAG_ARCHIVE_MAX_IMPORT_MB:512}
 
 logging:
   level:

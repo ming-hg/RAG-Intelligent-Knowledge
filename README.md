@@ -5,15 +5,17 @@
 
 需求、架构、实现已全部重构：前端 Vue 3 + TypeScript，后端 Spring Boot 4 + LangChain4j + PostgreSQL 17/pgvector。
 执行基线与决策记录见 [docs/重构方案.md](docs/重构方案.md)，远程模型服务接入见 [docs/远程模型服务接入.md](docs/远程模型服务接入.md)。
+虚拟化打开后的连库实测按 [docs/实测指导.md](docs/实测指导.md) 逐步跑，样本文件在 `samples/`（含两份故意失败的乱码/空正文文件）。
 
 ## 目录
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c 已落地 |
-| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d 已落地 |
+| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c/M5d 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
+| `samples` | 连库实测用的样本文档（事实写死，可当场判定对错） |
 | `docs` | 方案、ADR、硬性约束、接入手册 |
 
 ## 跑起来
@@ -47,12 +49,20 @@ curl -X PUT -H "Content-Type: application/json" \
   -d '{"content":"把解析弄乱的表格手工订正一遍","reembed":true}' \
   http://localhost:8080/api/documents/1/segments/12/content
 curl -X POST http://localhost:8080/api/documents/1/segments/12/reembed
+
+# 8) 整库搬家：先导出 zip（vectors=true 才能免重算，files=true 连原件一起走），再导入另一个库
+curl -OJ "http://localhost:8080/api/knowledge-bases/1/export?vectors=true&files=false"
+curl -F "file=@kb-1-20261115-213000.zip" "http://localhost:8080/api/knowledge-bases/2/import?rebuild=false"
 ```
+
+导入返回的 `mode` 只有两种：`CARRIED` = 模型名与维度都对得上，向量直接照搬、一次 embedding 都没花；
+`REBUILT` = 空间不兼容（或勾了 `rebuild=true`），按重新入库排队，等文档变 READY 后检索才完整。
+同 sha256 的文档跳过不覆盖，逐篇说明在 `notes` 里。
 
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 170 例）：
+不连数据库也能验证的代码层测试（当前 202 例）：
 
 ```bash
 cd rag-api && mvn -o test

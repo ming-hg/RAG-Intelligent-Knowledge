@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ArchiveMenu from '@/components/ArchiveMenu.vue'
 import DocumentDetail from '@/components/DocumentDetail.vue'
 import ScopePicker from '@/components/ScopePicker.vue'
 import { isInFlight, useDocumentStore } from '@/stores/documents'
@@ -105,6 +106,7 @@ const statusClass = (status: string) =>
             <input type="file" @change="onFileChange" :disabled="docs.uploading" />
             <span>{{ docs.uploading ? '上传中…' : '上传文档' }}</span>
           </label>
+          <ArchiveMenu />
         </div>
       </div>
 

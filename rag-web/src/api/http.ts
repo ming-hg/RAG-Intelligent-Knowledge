@@ -88,6 +88,50 @@ export async function requestEnvelope<T>(path: string, init?: RequestInit): Prom
   return readEnvelope<T>(await send(path, init))
 }
 
+/**
+ * Content-Disposition 里后端写的是 `filename*=UTF-8''%E4%B8%AD…`（RFC 5987），
+ * 老浏览器同时给的普通 filename 是乱码，所以带星号的优先。
+ */
+function fileNameFrom(header: string | null): string {
+  if (!header) return ''
+  const encoded = /filename\*=\s*[\w-]+''([^;]+)/i.exec(header)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded.trim().replace(/^"|"$/g, ''))
+    } catch {
+      // 百分号转义坏了就退回普通 filename，别让整个下载失败
+    }
+  }
+  return /filename=\s*"?([^";]+)"?/i.exec(header)?.[1]?.trim() ?? ''
+}
+
+/** 二进制下载：错误要在写响应头之前抛，所以后端失败时回来的仍是 JSON 信封，必须先判 content-type。 */
+export async function download(path: string, params?: Record<string, QueryValue>): Promise<{ blob: Blob; fileName: string }> {
+  const response = await send(`${path}${queryString(params)}`, { headers: { Accept: 'application/octet-stream' } })
+  const type = response.headers.get('Content-Type') ?? ''
+  if (!response.ok || type.includes('json')) {
+    const body = await readEnvelope<never>(response)
+    const detail = body.traceId ? `${body.message} ｜ traceId=${body.traceId}` : body.message
+    const error = new ApiError(detail || `下载失败（HTTP ${response.status}）`, body.code || response.status, body.traceId)
+    ElMessage.error(error.message)
+    throw error
+  }
+  return { blob: await response.blob(), fileName: fileNameFrom(response.headers.get('Content-Disposition')) }
+}
+
+/** 存盘用的临时 <a> 要先进 DOM 再点：Firefox 不挂上去时 click() 是空操作。 */
+export function saveBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // 立刻 revoke 有概率让浏览器拿到一个空文件，放到下一个宏任务
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
 export const http = {
@@ -129,4 +173,6 @@ export const http = {
 
   upload: <T>(path: string, form: FormData, options?: RequestOptions) =>
     requestJson<T>(path, { method: 'POST', body: form }, options),
+
+  download,
 }

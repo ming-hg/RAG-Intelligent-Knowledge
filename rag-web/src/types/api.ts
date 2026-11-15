@@ -135,6 +135,24 @@ export interface ChunkConfigView {
   effective: ChunkSettings
 }
 
+/**
+ * POST /api/knowledge-bases/{id}/import 的返回。
+ * mode 只有两个值：CARRIED = 向量空间对得上、块直接照搬；REBUILT = 全部重新排队入库。
+ * notes 是逐篇的非致命说明（同名跳过、原件校验不过、单篇失败），最多 40 条。
+ */
+export interface ImportSummary {
+  kbId: number
+  mode: 'CARRIED' | 'REBUILT'
+  imported: number
+  queued: number
+  segmentsCarried: number
+  originalsRestored: number
+  skippedSame: number
+  skippedEmpty: number
+  failed: number
+  notes: string[]
+}
+
 export interface SearchHit {
   rank: number
   segmentId: number
