@@ -63,6 +63,32 @@ public class DocumentRepository {
         return id;
     }
 
+    /**
+     * 归档导入落文档行：正文、页数、字数、分块覆盖都按包里的那份写，不再回原文件跑一遍 Tika。
+     * <p>
+     * status 由调用方给：带着可用向量导入直接 READY，向量空间对不上、要交给入库流水线重算的留 PENDING。
+     * filePath 只在包里真带了原始文件并落盘成功后才给；否则留 NULL——留着假路径只会在下次重解析时
+     * 报一个「文件读不到」的错，那个错看起来像磁盘坏了，不像「这是导入进来的文档」。
+     */
+    public long insertArchived(long kbId, String name, String sha256, String mime, Long fileSize, String content,
+                               Integer pageCount, int version, int indexVersion, DocStatus status,
+                               String chunkOverrideJson, String filePath) {
+        Long id = jdbc.queryForObject("""
+                INSERT INTO kb_document (kb_id, name, source_type, file_path, file_size, mime, sha256, content,
+                                         page_count, char_count, status, progress, version, index_version, available,
+                                         chunk_override, parsed_at, indexed_at)
+                VALUES (?, ?, 'FILE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?::jsonb, now(),
+                        CASE WHEN ? THEN now() ELSE NULL END)
+                RETURNING id
+                """, Long.class, kbId, name, filePath, fileSize, mime, sha256, content, pageCount,
+                content.length(), status.name(), status == DocStatus.READY ? 100 : 0, version, indexVersion,
+                chunkOverrideJson, status == DocStatus.READY);
+        if (id == null) {
+            throw new IllegalStateException("插入 kb_document 后没有拿到 id：" + name);
+        }
+        return id;
+    }
+
     public Optional<Document> findById(long id) {
         return jdbc.query("SELECT " + COLUMNS + " FROM kb_document WHERE id = ? AND deleted_at IS NULL",
                 MAPPER, id).stream().findFirst();
@@ -81,6 +107,12 @@ public class DocumentRepository {
         }
         return jdbc.query("SELECT " + COLUMNS + " FROM kb_document WHERE kb_id = ? AND status = ? AND deleted_at IS NULL"
                 + " ORDER BY id DESC LIMIT ? OFFSET ?", MAPPER, kbId, status.name(), limit, offset);
+    }
+
+    /** 归档导出用：整库存活文档，按 id 升序（包里的 slot 就是这个顺序，导入端据此定位正文与分块文件）。 */
+    public List<Document> listLive(long kbId) {
+        return jdbc.query("SELECT " + COLUMNS + " FROM kb_document WHERE kb_id = ? AND deleted_at IS NULL"
+                + " ORDER BY id", MAPPER, kbId);
     }
 
     public int count(long kbId) {

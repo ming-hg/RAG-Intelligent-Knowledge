@@ -498,7 +498,7 @@ class IngestServiceTest {
                 new RagProperties.Embedding(DIM, 2),
                 new RagProperties.Ingest(false, Duration.ofMillis(1), Duration.ofMinutes(5), 3, 1, 1,
                         List.of("pdf", "docx", "md", "txt"), RagProperties.Chunk.defaults()),
-                RagProperties.Retrieval.defaults());
+                RagProperties.Retrieval.defaults(), RagProperties.Archive.defaults());
         return new IngestService(props, knowledgeBases, documents, tasks, storage, parser,
                 chunkSplitter, embeddingModel, publisher, json);
     }

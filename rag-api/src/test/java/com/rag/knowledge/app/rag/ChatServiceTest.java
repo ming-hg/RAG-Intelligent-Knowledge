@@ -322,7 +322,7 @@ class ChatServiceTest {
                 new RagProperties.Storage("target/rag-test"),
                 new RagProperties.Embedding(768, 16),
                 RagProperties.Ingest.defaults(),
-                RagProperties.Retrieval.defaults());
+                RagProperties.Retrieval.defaults(), RagProperties.Archive.defaults());
     }
 
     private static ChatRepository.Session session(List<Long> kbIds) {

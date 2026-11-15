@@ -10,7 +10,7 @@ import java.util.List;
  */
 @ConfigurationProperties(prefix = "rag")
 public record RagProperties(LmStudio lmStudio, Storage storage, Embedding embedding, Ingest ingest,
-                            Retrieval retrieval) {
+                            Retrieval retrieval, Archive archive) {
 
     /** 配置里整段漏写 rag.ingest 时退回默认值，而不是让上传接口 NPE。 */
     public Ingest ingest() {
@@ -19,6 +19,11 @@ public record RagProperties(LmStudio lmStudio, Storage storage, Embedding embedd
 
     public Retrieval retrieval() {
         return retrieval == null ? Retrieval.defaults() : retrieval;
+    }
+
+    /** 归档段整体漏写、或写了段落却没给限值时都要能导出导入，本地部署不该因为少两行配置而少功能。 */
+    public Archive archive() {
+        return archive == null || archive.maxImportMb() <= 0 ? Archive.defaults() : archive;
     }
 
     public record LmStudio(
@@ -114,6 +119,20 @@ public record RagProperties(LmStudio lmStudio, Storage storage, Embedding embedd
 
         public static Budget defaults() {
             return new Budget(4096, 700, 900, 1.0, 4, 800);
+        }
+    }
+
+    /**
+     * 归档包（导出/导入）参数。
+     * <p>
+     * maxImportMb 与 spring.servlet.multipart.max-file-size 是两道不同的闸：后者管容器收多少字节，
+     * 这条管「这个包我们真的打算解到多大」。带向量的包比纯文本大一个数量级，所以它的默认值远高于
+     * rag.ingest.max-file-size-mb——那一条限制的是单个文档，不是整库归档。
+     */
+    public record Archive(int maxImportMb) {
+
+        public static Archive defaults() {
+            return new Archive(512);
         }
     }
 }

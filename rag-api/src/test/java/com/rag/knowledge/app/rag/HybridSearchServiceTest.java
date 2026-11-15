@@ -177,7 +177,7 @@ class HybridSearchServiceTest {
                 new RagProperties.Storage("target/rag-test"),
                 new RagProperties.Embedding(DIM, 16),
                 RagProperties.Ingest.defaults(),
-                retrieval);
+                retrieval, RagProperties.Archive.defaults());
     }
 
     private static EmbeddingModel vecOk() {

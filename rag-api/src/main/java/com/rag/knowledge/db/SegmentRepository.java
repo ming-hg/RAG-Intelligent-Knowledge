@@ -1,5 +1,6 @@
 package com.rag.knowledge.db;
 
+import com.rag.knowledge.domain.ArchivedSegment;
 import com.rag.knowledge.domain.SegmentDraft;
 import com.rag.knowledge.domain.SegmentView;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -125,6 +126,51 @@ public class SegmentRepository {
                 """, SEGMENT_MAPPER, segmentId, docId).stream().findFirst();
     }
 
+    /**
+     * 归档导出：当前生效那一代的全部块，带向量与 edited_at。
+     * <p>
+     * 不过滤 available：界面上被手工关掉检索的块也是这个库的一部分，导出再导入应该还原成关着的样子，
+     * 而不是悄悄把它放回检索结果里。
+     */
+    public List<ArchivedSegment> listArchived(long docId, int docVersion) {
+        String sql = """
+                SELECT s.chunk_no, p.chunk_no AS parent_chunk_no, s.content, s.heading_path,
+                       s.page_start, s.page_end, s.char_start, s.char_end, s.available, s.emb_status,
+                       s.edited_at::text AS edited_at, s.embedding
+                FROM kb_segment s
+                LEFT JOIN kb_segment p ON p.id = s.parent_id
+                WHERE s.doc_id = ? AND s.doc_version = ?
+                ORDER BY s.chunk_no
+                """;
+        return jdbc.query(sql, ARCHIVED_MAPPER, docId, docVersion);
+    }
+
+    /**
+     * 归档导入：整代块按包里的原样落库，available / emb_status / edited_at 都是源库的状态，不再由代码推导。
+     * 与 {@link #insertGeneration} 的区别就在这个「原样」上：那条是给新算出来的分块用的，状态必须由它算。
+     */
+    public int insertArchivedGeneration(long docId, long kbId, int docVersion, String embeddingModel,
+                                        List<ArchivedSegment> rows) {
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        String sql = """
+                INSERT INTO kb_segment (doc_id, kb_id, chunk_no, doc_version, content, heading_path,
+                                        page_start, page_end, char_start, char_end,
+                                        embedding, embedding_model, emb_status, available, edited_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::vector, ?, ?, ?, ?::timestamptz)
+                """;
+        List<Object[]> batch = new ArrayList<>(rows.size());
+        for (ArchivedSegment row : rows) {
+            batch.add(new Object[] {
+                    docId, kbId, row.chunkNo(), docVersion, row.content(), nullIfBlank(row.headingPath()),
+                    row.pageStart(), row.pageEnd(), row.charStart(), row.charEnd(),
+                    toVectorLiteral(row.embedding()), embeddingModel, row.embStatus(), row.available(),
+                    row.editedAt() });
+        }
+        return jdbc.batchUpdate(sql, batch).length;
+    }
+
     public int countForDocument(long docId, int docVersion) {
         Integer count = jdbc.queryForObject(
                 "SELECT count(*) FROM kb_segment WHERE doc_id = ? AND doc_version = ?",
@@ -146,6 +192,21 @@ public class SegmentRepository {
             rs.getString("emb_status"),
             rs.getObject("edited_at") != null,
             rs.getInt("hit_count"));
+
+    /** 归档映射保留 NULL 而不是折成 0：页码没解析出来和页码是第 0 页，在包里必须是两件事。 */
+    private static final RowMapper<ArchivedSegment> ARCHIVED_MAPPER = (rs, rowNum) -> new ArchivedSegment(
+            rs.getInt("chunk_no"),
+            (Integer) rs.getObject("parent_chunk_no"),
+            rs.getString("content"),
+            rs.getString("heading_path"),
+            rs.getObject("page_start", Integer.class),
+            rs.getObject("page_end", Integer.class),
+            rs.getObject("char_start", Integer.class),
+            rs.getObject("char_end", Integer.class),
+            rs.getBoolean("available"),
+            rs.getString("emb_status"),
+            rs.getString("edited_at"),
+            parseVectorLiteral(rs.getString("embedding")));
 
     public int count(long docId, int docVersion, boolean onlyPublished) {
         String sql = "SELECT count(*) FROM kb_segment WHERE doc_id = ? AND doc_version = ?"
@@ -206,6 +267,32 @@ public class SegmentRepository {
             sb.append(vector[i]);
         }
         return sb.append(']').toString();
+    }
+
+    /**
+     * pgvector 的文本形式是 `[0.1,0.2]`，JDBC 把它当未识别类型返回 PGobject，读成字符串即可。
+     * 归档导出需要真正的 float[]，所以在这里反解一次；空值与空串都当「这条没有向量」。
+     */
+    public static float[] parseVectorLiteral(String literal) {
+        if (literal == null || literal.isBlank()) {
+            return null;
+        }
+        String body = literal.trim();
+        if (body.startsWith("[")) {
+            body = body.substring(1);
+        }
+        if (body.endsWith("]")) {
+            body = body.substring(0, body.length() - 1);
+        }
+        if (body.isBlank()) {
+            return new float[0];
+        }
+        String[] tokens = body.split(",");
+        float[] vector = new float[tokens.length];
+        for (int i = 0; i < tokens.length; i++) {
+            vector[i] = Float.parseFloat(tokens[i].trim());
+        }
+        return vector;
     }
 
     private static String nullIfBlank(String value) {

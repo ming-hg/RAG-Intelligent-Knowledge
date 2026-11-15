@@ -216,7 +216,8 @@ class SegmentEditServiceTest {
                         "bge-base-zh-v1.5", 0.3, 0.8, null, Duration.ofSeconds(5), 1),
                 new RagProperties.Storage("./target/segment-edit-test-storage"),
                 new RagProperties.Embedding(DIM, 2),
-                RagProperties.Ingest.defaults(), RagProperties.Retrieval.defaults());
+                RagProperties.Ingest.defaults(), RagProperties.Retrieval.defaults(),
+                RagProperties.Archive.defaults());
         return new SegmentEditService(documents, segments, embeddingModel, props);
     }
 
