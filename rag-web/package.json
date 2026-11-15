@@ -1,27 +1,30 @@
 {
   "name": "rag-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview"
   },
   "dependencies": {
-    "axios": "^1.13.6",
     "element-plus": "^2.13.6",
-    "event-source-polyfill": "^1.0.31",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.1",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
-    "uuid": "^13.0.0",
     "vue": "^3.5.30",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.10.5",
     "@vitejs/plugin-vue": "^6.0.5",
-    "vite": "^8.0.1"
+    "@vue/tsconfig": "^0.7.0",
+    "typescript": "~5.7.3",
+    "vite": "^8.0.1",
+    "vue-tsc": "^2.2.10"
   }
 }

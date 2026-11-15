@@ -11,7 +11,7 @@
 | 目录 | 说明 |
 |---|---|
 | `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3 已落地 |
-| `rag-web` | 前端，M4 重写为 Vue 3 + TS |
+| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4 已落地 |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `docker-compose.yml` 与自建的 zhparser PG 镜像 |
 | `docs` | 方案、ADR、硬性约束、接入手册 |
@@ -25,13 +25,19 @@ docker compose -f deploy/docker-compose.yml up -d
 # 2) 后端：默认值已按本机实测环境写好，不用改配置
 cd rag-api && mvn -o spring-boot:run
 
-# 3) 自检：分层报告 PG / chat / embedding，models=true 时校验模型名回显
+# 3) 前端：Vite 8 需要 Node 20.19+ / 22.12+，/api 已配好代理，不用写后端地址
+cd rag-web && npm ci && npm run dev    # http://localhost:5173
+
+# 4) 自检：分层报告 PG / chat / embedding，models=true 时校验模型名回显
 curl "http://localhost:8080/api/health?models=true"
 
-# 4) 上传一份文档，然后轮询进度直到 status=READY
+# 5) 上传一份文档，然后轮询进度直到 status=READY
 curl -F "file=@../docs/重构方案.md" http://localhost:8080/api/documents
 curl http://localhost:8080/api/documents
 ```
+
+前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
+类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
 不连数据库也能验证的代码层测试（当前 124 例）：
 
