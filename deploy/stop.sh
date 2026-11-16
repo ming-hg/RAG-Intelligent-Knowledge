@@ -26,7 +26,13 @@ stop_pid() {
   pid=$(cat "$file")
   pid_stop "$pid" "$image" || rc=$?
   case "$rc" in
-    0) if pid_alive "$pid"; then echo "   $name：pid $pid 本来就不在"; else echo "   $name：已停止 pid $pid"; fi ;;
+    0) if pid_alive "$pid"; then
+         # pid_stop 只在自己确认「停掉了 / 本来就不在」时才返回 0，这里却还活着
+         # = 它退出的瞬间这个号被别的进程领走了。说「本来就不在」会让人以为已经停了，其实是另一个进程占用
+         echo "   $name：pid $pid 已不是 $name（号被别的进程复用了），这里没动它"
+       else
+         echo "   $name：已停止 pid $pid"
+       fi ;;
     2) echo "   $name：pid $pid 还在，但认不出是不是 $name（号与 $image 对不上，可能是别的会话复用过这个号）"
        echo "        为了不误杀别人起的进程，这里没动手。确认之后自己收：taskkill //PID $pid //T //F" ;;
     *) echo "   $name：pid $pid 停不掉（权限？），请手工结束它" ;;

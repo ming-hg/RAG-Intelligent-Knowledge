@@ -749,11 +749,20 @@ async function stepEvaluation() {
         assert(flagged.length > 0,
           `汇总说 ${m.truncatedCaseRate} 的正例有块没装进上下文，逐条结果里却一条都没标出来`)
       }
+      // 只做报告、不做断言：hit@1 比 hit@K 低的时候，把「掉的是哪条、排第几」当场说出来。
+      // ADR-022 之后两路第 1 名的 RRF 分数相等（都是 1/61），并列由「文档名 + 块序」破，
+      // 于是同一批用例的 hit@1 固定在 0.8 而不是 1.0——不说清楚，下一轮就会当成检索退化去查阈值
+      const tied = m.hitAt1 < m.hitAtK
+        ? d.cases.filter((c) => c.correct && c.firstRank > 1)
+          .map((c) => `「${c.question}」第 ${c.firstRank} 名`).join('、')
+        : ''
       return `hit@1=${m.hitAt1} hit@3=${m.hitAt3} hit@K=${m.hitAtK} MRR=${m.mrr} ` +
         `空召回率=${m.emptyRecallRate ?? '不适用'} 拒答正确率=${m.refusalAccuracy ?? '不适用'} ` +
         `截断率=${m.truncatedCaseRate ?? '不适用'}` +
         ` ｜ 负例：${neg.refused ? `拒答（${neg.hits === 0 ? '一条没召回' : `召回 ${neg.hits} 条却一块都装不下`}）`
-          : `没拒答，召回 ${neg.hits} 条当资料`}`
+          : `没拒答，召回 ${neg.hits} 条当资料`}` +
+        (tied ? ` ｜ hit@1<hit@K，排在第 2 名之后的命中用例：${tied}` +
+          (mode === 'hybrid' ? '（两路第 1 名的 RRF 都是 1/61，并列由文档名+块序破，非退化，见 ADR-022）' : '') : '')
     })
   }
 
