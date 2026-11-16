@@ -114,7 +114,12 @@ public class RetrievalRepository {
         }
         String score = query.mode() == RetrievalMode.VECTOR && vector ? "v.similarity" : "f.rrf";
         sql.appendRaw(score).append(" >= :threshold");
-        sql.append(" ORDER BY ").appendRaw(score).append(" DESC NULLS LAST, f.id LIMIT :topK");
+        // 并列名次必须由「文档名 + 块序」定，不能用插入号：一条精确编号（LEDGER-7731）会让关键词第 1 名
+        // 与向量第 1 名拿到完全相同的 1/(k+1)，而 `--archive` 重导入或重算都换 id——用 id 破并列等于
+        // 让评测分数跟着插入顺序漂，两轮差异归因不到任何参数上（实测把 hit@1 从 1.0 挪到 0.8）。
+        // 也不拿 v.similarity 破：RRF 的前提就是两路的量纲不可比，并列时塞回余弦等于偷偷偏袒向量路。
+        sql.append(" ORDER BY ").appendRaw(score).append(" DESC NULLS LAST,")
+                .append(" doc_name ASC NULLS LAST, s.chunk_no ASC, f.id LIMIT :topK");
         sql.param("threshold", query.threshold());
         sql.param("topK", query.topK());
 

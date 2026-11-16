@@ -16,24 +16,27 @@ for arg in "$@"; do
   esac
 done
 
+# Git Bash 的 kill 认不出别的会话起的进程，判活/停活的规矩都在 pid.sh 里
+. "$(dirname "${BASH_SOURCE[0]}")/pid.sh"
+
 stop_pid() {
-  local name="$1" file="$LOG_DIR/$2"
+  local name="$1" file="$LOG_DIR/$2" image="$3"
   [ -f "$file" ] || { echo "   $name：没有 pid 文件，跳过"; return; }
-  local pid
+  local pid rc=0
   pid=$(cat "$file")
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || true
-    for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-    kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null || true; echo "   $name：优雅退出超时，已强杀 pid $pid"; } || echo "   $name：已停止 pid $pid"
-  else
-    echo "   $name：pid $pid 本来就不在"
-  fi
+  pid_stop "$pid" "$image" || rc=$?
+  case "$rc" in
+    0) if pid_alive "$pid"; then echo "   $name：pid $pid 本来就不在"; else echo "   $name：已停止 pid $pid"; fi ;;
+    2) echo "   $name：pid $pid 还在，但认不出是不是 $name（号与 $image 对不上，可能是别的会话复用过这个号）"
+       echo "        为了不误杀别人起的进程，这里没动手。确认之后自己收：taskkill //PID $pid //T //F" ;;
+    *) echo "   $name：pid $pid 停不掉（权限？），请手工结束它" ;;
+  esac
   rm -f "$file"
 }
 
 echo "== 停止应用进程"
-stop_pid rag-web rag-web.pid
-stop_pid rag-api rag-api.pid
+stop_pid rag-web rag-web.pid node.exe
+stop_pid rag-api rag-api.pid java.exe
 
 if [ "$with_db" = yes ] || [ "$purge_data" = yes ]; then
   # 引擎没起来时 docker info 会挂着不返回，这里不套 timeout 就会让人以为停脚本卡死了

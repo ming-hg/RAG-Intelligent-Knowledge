@@ -16,7 +16,7 @@ Docker 引擎能应答后的连库实测按 [docs/实测指导.md](docs/实测�
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `start.sh` / `stop.sh` / `smoke.sh` 与 `docker-compose.yml`、自建的 zhparser PG 镜像 |
 | `samples` | 连库实测用的样本文档（事实写死，可当场判定对错） |
-| `docs` | 方案与 21 条 ADR、硬性约束、接入手册、连库实测指导；另有 `简历项目经历.md` / `面试学习手册.md`（数字全部可回查代码） |
+| `docs` | 方案与 22 条 ADR、硬性约束、接入手册、连库实测指导；另有 `简历项目经历.md` / `面试学习手册.md`（数字全部可回查代码） |
 
 ## 跑起来
 
@@ -95,7 +95,7 @@ curl -F "file=@kb-1-20261115-213000.zip" "http://localhost:8080/api/knowledge-ba
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 260 例）：
+不连数据库也能验证的代码层测试（当前 261 例）：
 
 ```bash
 cd rag-api && mvn -o test

@@ -39,6 +39,8 @@ fi
 
 LOG_DIR="$PWD/deploy/logs"
 mkdir -p "$LOG_DIR"
+# kill -0 认不出别的会话起的进程，判活必须走 pid.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pid.sh"
 
 API_PORT="${RAG_API_PORT:-8080}"
 WEB_PORT="${RAG_WEB_PORT:-5173}"
@@ -109,13 +111,15 @@ fi
 
 step "2/4 rag-api"
 command -v mvn >/dev/null 2>&1 || die "没找到 mvn 命令" "需要 Maven 与 JDK 17"
-if [ -f "$LOG_DIR/rag-api.pid" ] && kill -0 "$(cat "$LOG_DIR/rag-api.pid")" 2>/dev/null; then
+if pid_alive "$(cat "$LOG_DIR/rag-api.pid" 2>/dev/null)"; then
   echo "   已在运行（pid $(cat "$LOG_DIR/rag-api.pid")），跳过启动"
+  echo "   ! 这一支不打包也不替换：改了 rag-api 的代码要先 deploy/stop.sh 再起，否则第 4 步绿的是旧 jar"
 elif curl -sS -m 3 -o /dev/null "$API/api/health" 2>/dev/null; then
   # 端口被人占着又继续往下走，第 4 步的自检就会绿在一个假后端上——这个便宜不能占
   echo "   ! $API 上已经有一个会答 /api/health 的进程，且不是本脚本起的，跳过启动"
   echo "   ! 如果那是 rag-api 的另一个实例（IDE 里跑的、mvn spring-boot:run）没事；"
   echo "   ! 如果是别的东西（比如前端联调用 mock），先停掉它再跑，否则第 4 步的绿是假的"
+  echo "   ! 是本脚本上次起的但 pid 文件过期了？deploy/stop.sh 清一遍再起，否则改的代码不会生效"
 else
   (cd rag-api && mvn -o -q -DskipTests package) ||
     die "打包失败" "上面是编译错误；离线模式要求本地仓库已有全部依赖，联网时去掉 -o 可补齐"
@@ -143,7 +147,7 @@ done
 step "3/4 rag-web"
 command -v npm >/dev/null 2>&1 || die "没找到 npm 命令" "Vite 8 需要 Node 20.19+ / 22.12+"
 [ -d rag-web/node_modules ] || (cd rag-web && npm ci)
-if [ -f "$LOG_DIR/rag-web.pid" ] && kill -0 "$(cat "$LOG_DIR/rag-web.pid")" 2>/dev/null; then
+if pid_alive "$(cat "$LOG_DIR/rag-web.pid" 2>/dev/null)"; then
   echo "   已在运行（pid $(cat "$LOG_DIR/rag-web.pid")），跳过启动"
 else
   nohup npm --prefix rag-web run dev -- --port "$WEB_PORT" >"$LOG_DIR/rag-web.log" 2>&1 &

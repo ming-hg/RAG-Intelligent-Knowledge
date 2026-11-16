@@ -83,6 +83,26 @@ class RetrievalSqlTest {
                 .doesNotContain("WITH vec").doesNotContain("<=>");
     }
 
+    /**
+     * 并列名次的破法必须是「文档名 + 块序」，不能是插入号：一条精确编号会让关键词第 1 名与向量第 1 名
+     * 拿到完全相同的 1/(k+1)，而用 id 破并列时重算/重导入换 id 就会把名次换人——评测分数跟着插入顺序漂，
+     * 两轮差异归因不到任何参数上（本机实测 hit@1 从 1.0 挪到 0.8，数据一个字没改）。
+     * 也不许拿 v.similarity 破：RRF 的前提是两路量纲不可比，并列时塞回余弦等于偷偷偏袒向量路。
+     */
+    @Test
+    void tiedRrfRanksBreakOnDocumentPositionNotOnInsertionOrder() {
+        String hybrid = capture(query(RetrievalMode.HYBRID, KeywordEngine.CHINESE_TSVECTOR, false));
+        String order = hybrid.substring(hybrid.indexOf("ORDER BY f.rrf"));
+
+        assertThat(order).startsWith("ORDER BY f.rrf DESC NULLS LAST, doc_name ASC NULLS LAST, s.chunk_no ASC");
+        assertThat(order).contains("f.id").doesNotContain("ORDER BY f.rrf DESC NULLS LAST, f.id");
+        assertThat(order).as("并列时不得用余弦破——那是另一套量纲").doesNotContain("v.similarity");
+
+        // 纯向量模式的分数本来就是余弦，并列只可能来自同分离散块，无需再套一层
+        assertThat(capture(query(RetrievalMode.VECTOR, KeywordEngine.CHINESE_TSVECTOR, false)))
+                .contains("ORDER BY v.similarity DESC NULLS LAST, doc_name ASC NULLS LAST");
+    }
+
     @Test
     void keywordFallbackKeepsItsOwnScoringOperator() {
         String tsvector = capture(query(RetrievalMode.KEYWORD, KeywordEngine.CHINESE_TSVECTOR, false));
