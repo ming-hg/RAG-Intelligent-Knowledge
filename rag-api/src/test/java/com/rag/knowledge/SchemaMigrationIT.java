@@ -101,10 +101,13 @@ class SchemaMigrationIT {
                 """, Long.class, kbId, toVectorLiteral(randomUnitVector(768, 7L)));
         assertNotNull(hitId);
 
-        // 关键词检索兜底路径：pg_trgm 的 % 运算符对中文子串可用
+        // 关键词检索兜底路径：与 RetrievalRepository 的退化分支用同一个谓词。
+        // 这里刻意不用 % 操作符——它按 similarity（整句重合比例）过滤，短查询对长正文必然低于阈值，
+        // 真跑一次就发现整路空召回；word_similarity 才表达「查询是正文的一段」，也是线上实际走的那条。
         Integer byTrgm = jdbc.queryForObject(
-                "SELECT count(*) FROM kb_segment WHERE content % '知识库问答'", Integer.class);
-        assertTrue(byTrgm != null && byTrgm > 0, "pg_trgm 相似度匹配应命中中文内容");
+                "SELECT count(*) FROM kb_segment WHERE word_similarity('知识库问答', content) >= 0.25",
+                Integer.class);
+        assertTrue(byTrgm != null && byTrgm > 0, "pg_trgm 的 word_similarity 兜底应命中中文内容");
     }
 
     private static float[] randomUnitVector(int dim, long seed) {

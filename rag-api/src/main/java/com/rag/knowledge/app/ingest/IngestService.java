@@ -238,7 +238,9 @@ public class IngestService {
             if (!willRetry) {
                 documents.markFailed(docId, e.getClass().getSimpleName(), message(e));
             }
-            log.warn("文档 {} 入库失败（{}），{}", docId, message(e), willRetry ? "稍后重试" : "不再重试");
+            // 带上异常本身：NPE 这类没有 message 的故障，只打 message(e) 就只剩一个类名，
+            // 现场连「哪一行」都定位不了。行首的 traceId 只能串起请求，串不起栈。
+            log.warn("文档 {} 入库失败（{}），{}", docId, message(e), willRetry ? "稍后重试" : "不再重试", e);
         }
     }
 

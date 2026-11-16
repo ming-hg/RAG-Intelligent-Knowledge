@@ -102,16 +102,18 @@ class IngestPipelineIT {
 
         Document done = document(uploaded.documentId());
         assertThat(done.status()).isEqualTo(DocStatus.READY);
-        assertThat(done.version()).isEqualTo(2);
+        // 代次编号从 0 起算：上传插的行是 version=0，第一次发布才 +1（IngestService 的 targetVersion），
+        // 所以「首次入库 = 1、重算 = 2」，别按「上传即 1」写断言。
+        assertThat(done.version()).isEqualTo(1);
         assertThat(done.charCount()).isPositive();
         assertThat(text("SELECT status FROM kb_task WHERE doc_id = ?", done.id())).isEqualTo("DONE");
         assertThat(jdbc.queryForObject("SELECT indexed_at IS NOT NULL FROM kb_document WHERE id = ?",
                 Boolean.class, done.id())).isTrue();
 
-        List<SegmentView> published = segments.listForDocument(done.id(), 2, false, 500, 0);
+        List<SegmentView> published = segments.listForDocument(done.id(), 1, false, 500, 0);
         assertThat(published).isNotEmpty();
         assertThat(published).allMatch(SegmentView::available);
-        assertThat(segments.countMissingEmbedding(done.id(), 2)).isZero();
+        assertThat(segments.countMissingEmbedding(done.id(), 1)).isZero();
         // 父子块：检索块都带向量，父块只做上下文、emb_status=SKIPPED
         assertThat(published).anyMatch(view -> "SKIPPED".equals(view.embStatus()));
         assertThat(published).anyMatch(view -> view.parentChunkNo() != null);
@@ -144,10 +146,10 @@ class IngestPipelineIT {
 
         Document after = document(docId);
         assertThat(after.status()).isEqualTo(DocStatus.READY);
-        assertThat(after.version()).isEqualTo(3);
+        assertThat(after.version()).isEqualTo(2);
         // 旧代次整条消失、新代次全部可用：不存在半新半旧的中间态
-        assertThat(segments.countForDocument(docId, 2)).isZero();
-        assertThat(segments.count(docId, 3, true)).isPositive();
+        assertThat(segments.countForDocument(docId, 1)).isZero();
+        assertThat(segments.count(docId, 2, true)).isPositive();
         // parsed_at 没动 = 这一轮没跑 Tika，正文来自 kb_document.content
         assertThat(text("SELECT parsed_at::text FROM kb_document WHERE id = ?", docId)).isEqualTo(parsedAt);
     }
@@ -162,7 +164,7 @@ class IngestPipelineIT {
         runNextTask();
 
         assertThat(text("SELECT parsed_at::text FROM kb_document WHERE id = ?", docId)).isNotEqualTo(parsedAt);
-        assertThat(document(docId).version()).isEqualTo(3);
+        assertThat(document(docId).version()).isEqualTo(2);
     }
 
     @Test
@@ -198,7 +200,7 @@ class IngestPipelineIT {
         assertThat(failed.errorMsg()).contains("处理建议");
         assertThat(text("SELECT status || '/' || attempt || '/' || COALESCE(error_type, '')"
                 + " FROM kb_task WHERE doc_id = ?", docId)).isEqualTo("FAILED/1/GARBLED_TEXT");
-        assertThat(segments.countForDocument(docId, 2)).isZero();
+        assertThat(segments.countForDocument(docId, 1)).isZero();
     }
 
     @Test
@@ -210,7 +212,7 @@ class IngestPipelineIT {
 
         assertThat(document(docId).status()).isEqualTo(DocStatus.FAILED);
         assertThat(document(docId).errorCode()).isEqualTo("DIM_MISMATCH");
-        assertThat(segments.countForDocument(docId, 2)).isZero();
+        assertThat(segments.countForDocument(docId, 1)).isZero();
     }
 
     @Test

@@ -129,9 +129,15 @@ public class DocumentRepository {
         return count == null ? 0 : count;
     }
 
+    /**
+     * 「还没解析过」在这条路上是正常状态：上传只写元数据，content 要等解析完才回填。
+     * 但 content 是可空列，单列 mapper 会返回 null，而 `Stream.findFirst()` 内部是
+     * `Optional.of(...)`——遇到 null 元素直接抛 NullPointerException（不是 empty）。
+     * 现象是每一次入库都在还没干活的地方失败，异常还被归进「稍后重试」，看起来像模型服务的问题。
+     */
     public String content(long id) {
-        return jdbc.query("SELECT content FROM kb_document WHERE id = ?",
-                (rs, rowNum) -> rs.getString(1), id).stream().findFirst().orElse(null);
+        List<String> contents = jdbc.queryForList("SELECT content FROM kb_document WHERE id = ?", String.class, id);
+        return contents.isEmpty() ? null : contents.get(0);
     }
 
     /**

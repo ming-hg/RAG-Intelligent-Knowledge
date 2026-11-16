@@ -21,11 +21,13 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 /**
@@ -227,11 +229,12 @@ class RetrievalIT {
         segment(701, DOC_ID, KB_ID, 1, "父块正文", 0.0, null, true, false);
         segment(702, DOC_ID, KB_ID, 2, "子块正文", 1.0, 701L, true, true);
 
-        Map<Long, String> parents = retrieval.parentContents(List.of(701L, 701L, null));
+        // List.of 不接受 null，而这两条断言要验的正是「输入里混了 null 也不炸」，只能用 Arrays.asList
+        Map<Long, String> parents = retrieval.parentContents(Arrays.asList(701L, 701L, null));
 
         assertThat(parents).containsExactly(Map.entry(701L, "父块正文"));
         assertThat(retrieval.parentContents(List.of())).isEmpty();
-        assertThat(retrieval.touchHits(List.of(702L, 702L, null))).isEqualTo(1);
+        assertThat(retrieval.touchHits(Arrays.asList(702L, 702L, null))).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT hit_count FROM kb_segment WHERE id = 702", Integer.class)).isOne();
         assertThat(retrieval.touchHits(List.of())).isZero();
     }
@@ -266,7 +269,7 @@ class RetrievalIT {
     @Test
     void embeddingOutageDegradesToKeywordInsteadOfFailingTheQuestion() {
         segment(821, DOC_ID, KB_ID, 1, "客服话术 " + QUERY_TEXT, 0.0, null, true, true);
-        when(embeddingModel.embedAll(anyList())).thenThrow(new IllegalStateException("LM Studio 未启动"));
+        when(embeddingModel.embed(anyString())).thenThrow(new IllegalStateException("LM Studio 未启动"));
 
         HybridSearchService.Outcome outcome = searchService.search(QUERY_TEXT, List.of(KB_ID), null, null, null);
 
@@ -276,10 +279,16 @@ class RetrievalIT {
         assertThat(outcome.hits()).extracting(SearchHit::segmentId).containsExactly(821L);
     }
 
+    /**
+     * 问答侧向量化走的是 `embed(String)`（langchain4j 的默认方法），入库侧才走 `embedAll`。
+     * 只 stub embedAll 的话，mock 上的 embed(String) 直接返回 null，
+     * 现象是「模型服务好好的」却在 embed(...).content() 上抛 NPE，看着像生产代码的锅。
+     */
     private void stubEmbedding(double onQueryAxis) {
+        float[] vector = axisVectorArray(onQueryAxis);
+        when(embeddingModel.embed(anyString())).thenAnswer(invocation -> Response.from(new Embedding(vector)));
         when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
             List<TextSegment> segments = invocation.getArgument(0);
-            float[] vector = axisVectorArray(onQueryAxis);
             return Response.from(segments.stream().map(s -> new Embedding(vector)).toList());
         });
     }
@@ -312,9 +321,11 @@ class RetrievalIT {
     }
 
     private static float[] axisVectorArray(double onQueryAxis) {
+        // 单位向量：第 3 维是给定的投影，第 2 维补正交分量。之前只填这两个分量而不归一化，
+        // 于是 cos(查询, 块) 与 onQueryAxis 完全不成比例（0.1 也算出 0.996），
+        // 「min-score 是余弦量纲」那条断言其实一直在测空气。
         float[] values = new float[768];
-        // 留一点公共分量，避免零向量让 cosine distance 变成 NaN
-        values[0] = 0.01f;
+        values[1] = (float) Math.sqrt(Math.max(0.0, 1.0 - onQueryAxis * onQueryAxis));
         values[2] = (float) onQueryAxis;
         return values;
     }

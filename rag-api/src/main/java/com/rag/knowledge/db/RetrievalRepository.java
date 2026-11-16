@@ -10,6 +10,8 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -181,15 +183,35 @@ public class RetrievalRepository {
             rs.getInt("doc_version"),
             rs.getString("content"),
             rs.getString("heading_path"),
-            (Integer) rs.getObject("page_start"),
-            (Integer) rs.getObject("page_end"),
-            (Integer) rs.getObject("char_start"),
-            (Integer) rs.getObject("char_end"),
-            (Long) rs.getObject("parent_id"),
-            (Integer) rs.getObject("vec_rank"),
-            (Integer) rs.getObject("kw_rank"),
+            intOrNull(rs, "page_start"),
+            intOrNull(rs, "page_end"),
+            intOrNull(rs, "char_start"),
+            intOrNull(rs, "char_end"),
+            longOrNull(rs, "parent_id"),
+            intOrNull(rs, "vec_rank"),
+            intOrNull(rs, "kw_rank"),
             rs.getDouble("rrf"),
-            (Double) rs.getObject("similarity"));
+            doubleOrNull(rs, "similarity"));
+
+    /**
+     * 名次一律走 getInt 而不是 (Integer) getObject：row_number() 在 PG 里是 bigint，
+     * getObject 给的是 Long，硬转型会在**有命中的那一次请求**上抛 ClassCastException——
+     * 空结果集永远不触发，所以只有连库跑才暴露得出来。列宽（integer/bigint/numeric）也不再敏感。
+     */
+    private static Integer intOrNull(ResultSet rs, String column) throws SQLException {
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private static Long longOrNull(ResultSet rs, String column) throws SQLException {
+        long value = rs.getLong(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private static Double doubleOrNull(ResultSet rs, String column) throws SQLException {
+        double value = rs.getDouble(column);
+        return rs.wasNull() ? null : value;
+    }
 
     /** SQL 片段与命名参数一起构造，杜绝「加了占位符忘了加值」。 */
     private static final class Sql {
