@@ -54,11 +54,17 @@ docker_alive() {
 }
 if ! docker_alive; then
   die "Docker 引擎没在跑（docker info 15 秒内没返回或失败）" \
-    "Windows 上这通常是虚拟化没开：BIOS 开 VT-x/AMD-V → wsl --update → 等 Docker Desktop 显示 Engine running" \
+    "先分清是哪一种：docker version 只回 Client 且报 npipe ...dockerDesktopLinuxEngine 找不到文件，是 Docker Desktop 进程没启动，直接启动它（约 20 秒应答），跟虚拟化无关" \
+    "确认虚拟化：Get-CimInstance Win32_ComputerSystem 的 HypervisorPresent=True 即正常，别去翻 BIOS（Win32_Processor.VirtualizationFirmwareEnabled=False 是假信号）" \
     "验证：docker info --format '{{.ServerVersion}}' 能打印版本号才算通"
 fi
 
 step "1/4 PostgreSQL（首次会编译 zhparser 镜像，5-15 分钟属正常）"
+# 构建上下文里没有这两个包，BuildKit 报的是「COPY failed」，看不出真正缺的是哪一步
+for pkg in scws-1.2.3.tar.gz zhparser-2.3.tar.gz; do
+  [ -f "deploy/pg/vendor/$pkg" ] || die "缺少 deploy/pg/vendor/$pkg" \
+    "跑一次即可（宿主侧下载 + sha256 校验，之后构建全程离线）：sh deploy/pg/fetch-vendor.sh"
+done
 docker compose -f deploy/docker-compose.yml up -d --build
 
 pg_status=""

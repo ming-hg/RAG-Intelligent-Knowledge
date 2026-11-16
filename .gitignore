@@ -12,6 +12,9 @@ rag-server/temp/
 rag-server/data/
 rag-server/chroma-data/
 
+# zhparser 构建用的上游源码包（约 14MB）：跑 sh deploy/pg/fetch-vendor.sh 取，带 sha256 校验
+deploy/pg/vendor/
+
 # 本地环境
 deploy/.env
 .env
