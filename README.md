@@ -13,7 +13,7 @@ Docker 引擎能应答后的连库实测按 [docs/实测指导.md](docs/实测�
 |---|---|
 | `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d/M5e/M5f/M6 已落地 |
 | `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c/M5d 已落地（M5e 评测只有接口，没做页面） |
-| `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
+| `rag-server` | 旧 Node 实现，M6 验收通过后已从工作区删除；代码在 4 月那几个提交里仍可读回（`4bf3375`、`6388e09`） |
 | `deploy` | `start.sh` / `stop.sh` / `smoke.sh` 与 `docker-compose.yml`、自建的 zhparser PG 镜像 |
 | `samples` | 连库实测用的样本文档（事实写死，可当场判定对错） |
 | `docs` | 方案与 22 条 ADR、硬性约束、接入手册、连库实测指导；另有 `简历项目经历.md` / `面试学习手册.md`（数字全部可回查代码） |
