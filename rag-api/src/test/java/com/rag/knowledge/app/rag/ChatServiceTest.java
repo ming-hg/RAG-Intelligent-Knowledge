@@ -4,7 +4,6 @@ import com.rag.knowledge.app.diag.RunDiagnostics;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.ChatRepository;
-import com.rag.knowledge.db.KnowledgeBaseRepository;
 import com.rag.knowledge.db.RetrievalRepository;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -52,7 +51,6 @@ class ChatServiceTest {
     private static final UUID ANSWER_ID = UUID.randomUUID();
 
     private final ChatRepository chats = mock(ChatRepository.class);
-    private final KnowledgeBaseRepository knowledgeBases = mock(KnowledgeBaseRepository.class);
     private final RetrievalRepository retrieval = mock(RetrievalRepository.class);
     private final HybridSearchService searchService = mock(HybridSearchService.class);
     private final StreamingChatModel streamingModel = mock(StreamingChatModel.class);
@@ -265,22 +263,36 @@ class ChatServiceTest {
         service().ask(request("库里有什么"), sink);
 
         verify(searchService).search(eq("库里有什么"), eq(List.of(42L)), any(), any(), any());
-        verify(knowledgeBases, never()).ensureDefault(anyString(), anyString(), anyInt());
     }
 
+    /**
+     * 范围缺失要在任何写入之前挡下，而不是兜底到默认库：兜底等于替用户决定「查哪个库」，
+     * 而答案里看不出资料来自哪一层范围——前端正是靠这条 400 提前拦住提问按钮的。
+     */
     @Test
-    void newSessionFallsBackToTheDefaultKnowledgeBase() {
-        when(chats.createSession(anyString(), anyList())).thenReturn(session(List.of(1L)));
+    void scopelessQuestionIsRejectedBeforeAnythingIsWritten() {
+        service().ask(new ChatService.AskRequest(null, "在吗", null, null, null, null), sink);
+
+        assertThat(sink.events).containsExactly("error", "complete");
+        assertThat(sink.errorCode).isEqualTo(400);
+        assertThat(sink.errorMessage).contains("检索范围");
+        verifyNoModelCall();
+        verify(chats, never()).createSession(anyString(), anyList());
+        verify(chats, never()).insertQuestion(any(), anyString(), any());
+    }
+
+    /** 会话 id 不给但范围给了：这时才建会话，且会话记住的就是这次的范围。 */
+    @Test
+    void newSessionIsCreatedWithTheRequestedScope() {
+        when(chats.createSession(anyString(), anyList())).thenReturn(session(List.of(7L)));
         when(chats.listMessages(any(), anyInt())).thenReturn(List.of());
-        when(knowledgeBases.ensureDefault(anyString(), anyString(), anyInt()))
-                .thenReturn(new KnowledgeBaseRepository.KnowledgeBase(1L, "默认知识库", "bge", 768, 1));
         stubSearch(List.of());
         stubAnswerRow();
 
-        service().ask(new ChatService.AskRequest(null, "第一个问题", null, null, null, null), sink);
+        service().ask(new ChatService.AskRequest(null, "第一个问题", List.of(7L), null, null, null), sink);
 
-        verify(chats).createSession(eq("新会话"), eq(List.of(1L)));
-        verify(searchService).search(eq("第一个问题"), eq(List.of(1L)), any(), any(), any());
+        verify(chats).createSession(eq("新会话"), eq(List.of(7L)));
+        verify(searchService).search(eq("第一个问题"), eq(List.of(7L)), any(), any(), any());
     }
 
     @Test
@@ -366,7 +378,7 @@ class ChatServiceTest {
     }
 
     private ChatService service(RagProperties.Budget budget) {
-        return new ChatService(chats, knowledgeBases, retrieval, searchService, new ContextPlanner(),
+        return new ChatService(chats, retrieval, searchService, new ContextPlanner(),
                 streamingModel, props(budget), json, diagnostics);
     }
 

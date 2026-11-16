@@ -509,16 +509,21 @@ async function stepSearch() {
   }
   for (const f of SEARCH_FACTS) {
     await checkFacts(`「${f.q}」${f.mode} 命中《${f.doc}》且含 ${f.want}`, async () => {
-      const env = await api('POST', '/search', { json: { query: f.q, kbIds: [kbId], mode: f.mode, topK: 8 } })
+      // snippetChars 拉满：默认 160 字只是引用条目的预览，token 在块的后半段时
+      // 「没命中」是摘要截断造成的假失败，不是检索失败。这里要验的是整块正文。
+      const env = await api('POST', '/search',
+        { json: { query: f.q, kbIds: [kbId], mode: f.mode, topK: 8, snippetChars: 2000 } })
       const hit = env.data.hits.find((h) => h.docName.includes(f.doc))
       assert(hit, `${f.mode} 没命中《${f.doc}》，top1=${env.data.hits[0]?.docName ?? '无命中'}`)
       assert(hit.snippet.includes(f.want) || env.data.hits.some((h) => (h.snippet ?? '').includes(f.want)),
-        `命中了《${f.doc}》，但 8 条摘要里找不到「${f.want}」——分块把它切丢了还是清洗吃掉了`)
+        `命中了《${f.doc}》，但整块正文里找不到「${f.want}」——分块把它切丢了还是清洗吃掉了`)
       return `rank=${hit.rank} rrf=${hit.rrf} 页=${hit.pageStart ?? '-'}`
     })
   }
   await checkFacts(`不存在的记号「${ABSENT_TOKEN}」不该被当成命中`, async () => {
-    const env = await api('POST', '/search', { json: { query: ABSENT_TOKEN, kbIds: [kbId], mode: 'hybrid', topK: 5 } })
+    const env = await api('POST', '/search', {
+      json: { query: ABSENT_TOKEN, kbIds: [kbId], mode: 'hybrid', topK: 5, snippetChars: 2000 },
+    })
     const polluted = env.data.hits.filter((h) => (h.snippet ?? '').includes(ABSENT_TOKEN))
     assert(polluted.length === 0, `${env.data.hitCount} 条命中里 ${polluted.length} 条含该记号：库里没有它`)
     return `命中 ${env.data.hitCount} 条，均为向量近似（无一条含该记号）`
@@ -620,9 +625,11 @@ async function stepDisableSegment() {
   }
   let target = null
   await check('找到含「薪酬」的块', async () => {
-    const env = await api('POST', '/search', { json: { query: '薪酬', kbIds: [kbId], mode: 'keyword', topK: 10 } })
+    const env = await api('POST', '/search', {
+      json: { query: '薪酬', kbIds: [kbId], mode: 'keyword', topK: 10, snippetChars: 2000 },
+    })
     target = env.data.hits.find((h) => (h.snippet ?? '').includes('薪酬'))
-    assert(target, `关键词「薪酬」没命中任何块：${env.data.hitCount} 条命中，zhparser 那条路是不是降级了`)
+    assert(target, `关键词「薪酬」召不回含它的块：${env.data.hitCount} 条命中，zhparser 那条路是不是降级了`)
     return `segment=${target.segmentId}《${target.docName}》#${target.chunkNo}`
   })
   if (!target) return
@@ -647,6 +654,20 @@ async function stepArchive() {
   let zip = null
   let exportedDocs = []
   let manifest = null
+  let disabled = null
+  // 必须赶在导出之前关：包里没有这个状态，后面「导入把人工意图带回来了」就只是在验一个没发生过的假设
+  await check('先关掉一个块，看导入能不能把它原样带回来', async () => {
+    const env = await api('GET', '/documents', { params: { kbId, status: 'READY', limit: 5 } })
+    const doc = env.data[0]
+    assert(doc, '库里没有 READY 文档，归档段没得测')
+    const segs = await api('GET', `/documents/${doc.id}/segments`, { params: { onlySearchable: true, limit: 20 } })
+    const seg = (segs.data ?? []).find((s) => s.available)
+    assert(seg, '这篇文档没有可用块')
+    await api('PATCH', `/documents/${doc.id}/segments/${seg.id}`, { params: { available: false } })
+    disabled = { docName: doc.name, segmentId: seg.id }
+    return `${doc.name} #${seg.id}`
+  })
+
   await check('GET /export?vectors=true&files=true 是合法 zip', async () => {
     const res = await send('GET', `/knowledge-bases/${kbId}/export`, {
       params: { vectors: true, files: true }, accept: 'application/octet-stream',
@@ -688,19 +709,6 @@ async function stepArchive() {
     assert(originals === exportedDocs.length,
       `files/ 有 ${originals} 条，篇数 ${exportedDocs.length}：带 files=true 就该每篇一个原件`)
     return `${exportedDocs.length} 篇 / ${exportedDocs.reduce((a, d) => a + d.segmentCount, 0)} 块 / 原件 ${originals}`
-  })
-
-  let disabled = null
-  await check('先关掉一个块，看导入能不能把它原样带回来', async () => {
-    const env = await api('GET', '/documents', { params: { kbId, status: 'READY', limit: 5 } })
-    const doc = env.data[0]
-    assert(doc, '库里没有 READY 文档，归档段没得测')
-    const segs = await api('GET', `/documents/${doc.id}/segments`, { params: { onlySearchable: true, limit: 20 } })
-    const seg = (segs.data ?? []).find((s) => s.available)
-    assert(seg, '这篇文档没有可用块')
-    await api('PATCH', `/documents/${doc.id}/segments/${seg.id}`, { params: { available: false } })
-    disabled = { docName: doc.name, segmentId: seg.id }
-    return `${doc.name} #${seg.id}`
   })
 
   await check('DELETE 掉该库全部文档', async () => {

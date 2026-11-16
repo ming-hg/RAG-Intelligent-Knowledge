@@ -89,10 +89,11 @@ public class ChatRepository {
     }
 
     public Session createSession(String title, List<Long> kbIds) {
-        return jdbc.queryForObject("""
-                INSERT INTO chat_session (title, kb_ids)
-                VALUES (:title, CAST(:kbIds AS bigint[]))
-                RETURNING """ + SESSION_COLUMNS,
+        // 用普通拼接而不是文本块收尾：文本块会剥掉行尾空格，`RETURNING """` 拼出来是 RETURNINGid，
+        // 语法错误只在「新建会话」这一条路上炸，单测全 mock 看不见，空库一跑必现。
+        String sql = "INSERT INTO chat_session (title, kb_ids) VALUES (:title, CAST(:kbIds AS bigint[]))"
+                + " RETURNING " + SESSION_COLUMNS;
+        return jdbc.queryForObject(sql,
                 new MapSqlParameterSource().addValue("title", title).addValue("kbIds", arrayLiteral(kbIds)),
                 SESSION_MAPPER);
     }

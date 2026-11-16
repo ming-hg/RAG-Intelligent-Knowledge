@@ -29,8 +29,16 @@ public class RagException extends RuntimeException {
         return hints;
     }
 
+    /**
+     * 参数错也要带「去哪儿改什么」：400 只说「不合法」时，调用方唯一能做的就是把请求体贴回来问人。
+     * 单参版本保留给确实没什么可提示的场合（重载的 String... 会吞掉它，所以不能靠它兜底）。
+     */
     public static RagException badRequest(String message) {
         return new RagException(400, message);
+    }
+
+    public static RagException badRequest(String message, String... hints) {
+        return new RagException(400, message, hints);
     }
 
     public static RagException notFound(String message) {

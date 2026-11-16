@@ -5,7 +5,6 @@ import com.rag.knowledge.app.model.ContextOverflow;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.ChatRepository;
-import com.rag.knowledge.db.KnowledgeBaseRepository;
 import com.rag.knowledge.db.RetrievalRepository;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -47,7 +46,6 @@ public class ChatService {
     public static final String STATUS_INTERRUPTED = "INTERRUPTED";
 
     private final ChatRepository chats;
-    private final KnowledgeBaseRepository knowledgeBases;
     private final RetrievalRepository retrieval;
     private final HybridSearchService searchService;
     private final ContextPlanner planner;
@@ -56,11 +54,10 @@ public class ChatService {
     private final ObjectMapper json;
     private final RunDiagnostics diagnostics;
 
-    public ChatService(ChatRepository chats, KnowledgeBaseRepository knowledgeBases, RetrievalRepository retrieval,
+    public ChatService(ChatRepository chats, RetrievalRepository retrieval,
                        HybridSearchService searchService, ContextPlanner planner, StreamingChatModel streamingModel,
                        RagProperties props, ObjectMapper json, RunDiagnostics diagnostics) {
         this.chats = chats;
-        this.knowledgeBases = knowledgeBases;
         this.retrieval = retrieval;
         this.searchService = searchService;
         this.planner = planner;
@@ -128,13 +125,14 @@ public class ChatService {
 
     private void run(AskRequest request, String question, Sink sink, long start, String traceId) {
         ChatRepository.Session session = resolveSession(request);
+        // 范围先于任何写入决定：范围缺失是 400，此时问题还没入库，会话里不会留下一条答不下去的问句
+        List<Long> scopedKbIds = scopeKbIds(request, session);
         // 历史要在写入本轮问题之前取，否则本轮问题会作为「上一轮」重复进 prompt
         List<ChatRepository.Message> history = chats.listMessages(session.id(),
                 Math.max(1, props.retrieval().budget().historyMaxTurns()) * 2);
         UUID questionId = chats.insertQuestion(session.id(), question, traceId);
         chats.nameFromFirstQuestion(session.id(), question);
 
-        List<Long> scopedKbIds = scopeKbIds(request, session);
         HybridSearchService.Outcome outcome = searchService.search(question, scopedKbIds,
                 request.docIds(), request.mode(), request.topK());
         RagProperties.Budget budget = props.retrieval().budget();
@@ -282,12 +280,31 @@ public class ChatService {
     }
 
     private ChatRepository.Session resolveSession(AskRequest request) {
-        if (request.sessionId() == null) {
-            return chats.createSession("新会话", scopeKbIds(request, null));
+        if (request.sessionId() != null) {
+            return chats.requireSession(request.sessionId());
         }
-        return chats.requireSession(request.sessionId());
+        // 新会话的范围只能来自请求。先验后建：否则一个注定 400 的请求会先留下一行垃圾会话，
+        // 用户下次打开列表会看见它，比多打一次模型难查得多。
+        if (request.kbIds() == null || request.kbIds().isEmpty()) {
+            throw missingScope();
+        }
+        return chats.createSession("新会话", List.copyOf(request.kbIds()));
     }
 
+    /**
+     * 起流之前就定得下来的错，用异常离开，而不是塞进事件流里的 error：控制器据此回 JSON 信封，
+     * 调用方不必为了一个 400 先开一条流再读事件。ask() 里会自己再算一遍范围，两处共用
+     * {@link #scopeKbIds}，不存在「校验和执行的规则不一样」这种分裂。
+     */
+    public void requireScope(AskRequest request) {
+        scopeKbIds(request, request.sessionId() == null ? null : chats.requireSession(request.sessionId()));
+    }
+
+    /**
+     * 检索范围必须是明确的：请求带的 kbIds 优先，其次是会话自己选过的库。
+     * 这里**不兜底默认知识库**——「全库检索」在单机上听起来方便，实际是把无关库的资料塞进上下文，
+     * 逼模型编一段衔接话，而且用户从答案上看不出来。
+     */
     private List<Long> scopeKbIds(AskRequest request, ChatRepository.Session session) {
         if (request.kbIds() != null && !request.kbIds().isEmpty()) {
             return List.copyOf(request.kbIds());
@@ -295,8 +312,12 @@ public class ChatService {
         if (session != null && !session.kbIds().isEmpty()) {
             return session.kbIds();
         }
-        return List.of(knowledgeBases
-                .ensureDefault("默认知识库", props.lmStudio().embeddingModel(), props.embedding().dim()).id());
+        throw missingScope();
+    }
+
+    private static RagException missingScope() {
+        return RagException.badRequest("问答必须落在明确的检索范围里：请求带 kbIds，或会话本身选过知识库",
+                "前端在左上角选至少一个库；直接调 API 就在 body 里给 kbIds");
     }
 
     /** 历史按 role 直白映射：本轮问题作为最后一条 user 消息单独拼，不在这里出现。 */

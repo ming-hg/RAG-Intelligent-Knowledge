@@ -77,11 +77,14 @@ public class ChatController {
 
     @PostMapping(value = "/ask", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter ask(@RequestBody AskBody body) {
+        ChatService.AskRequest request = toRequest(body);
+        // 参数错在起流之前就该回 JSON（§7.4）：先建 emitter 再失败的话，前端只会看到一个
+        // 立刻断掉的流，和「服务炸了」在现场完全同形。
+        chatService.requireScope(request);
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
         SseSink sink = new SseSink(emitter);
         emitter.onTimeout(sink::close);
         emitter.onError(ex -> sink.close());
-        ChatService.AskRequest request = toRequest(body);
         try {
             chatExecutor.execute(() -> chatService.ask(request, sink));
         } catch (RejectedExecutionException ex) {

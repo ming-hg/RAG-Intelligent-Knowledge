@@ -5,6 +5,7 @@ import com.rag.knowledge.common.RagException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -16,13 +17,25 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    /**
+     * 错误信封的 Content-Type 必须写死，不能交给协商：/chat/ask 这类 SSE 端点带着
+     * {@code Accept: text/event-stream}，协商结果是「只能吐事件流」，于是起流前的参数错会变成
+     * 一个没有 body 的 500——前端按 content-type 分支的整段逻辑（§7.4）根本没机会跑，
+     * 用户看到的和「服务炸了」一模一样。错误就是 JSON，客户端要流也得先读到这句话。
+     */
+    private ResponseEntity<ApiResponse<Object>> json(int code, String message) {
+        return ResponseEntity.status(resolveStatus(code))
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResponse.error(code, message));
+    }
+
     @ExceptionHandler(RagException.class)
     public ResponseEntity<ApiResponse<Object>> handleRag(RagException ex) {
         log.warn("业务异常 code={} msg={} hints={}", ex.code(), ex.getMessage(), ex.hints());
         String message = ex.hints().isEmpty()
                 ? ex.getMessage()
                 : ex.getMessage() + " ｜ 处理建议: " + String.join(" / ", ex.hints());
-        return ResponseEntity.status(resolveStatus(ex.code())).body(ApiResponse.error(ex.code(), message));
+        return json(ex.code(), message);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -31,20 +44,18 @@ public class GlobalExceptionHandler {
                 .map(e -> e.getField() + ": " + e.getDefaultMessage())
                 .reduce((a, b) -> a + "; " + b)
                 .orElse("参数校验失败");
-        return ResponseEntity.badRequest().body(ApiResponse.error(400, detail));
+        return json(400, detail);
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ApiResponse<Object>> handleUploadSize(MaxUploadSizeExceededException ex) {
-        return ResponseEntity.badRequest()
-                .body(ApiResponse.error(400, "文件超出大小限制，请调大 spring.servlet.multipart.max-file-size"));
+        return json(400, "文件超出大小限制，请调大 spring.servlet.multipart.max-file-size");
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Object>> handleOther(Exception ex) {
         log.error("未处理异常", ex);
-        return ResponseEntity.internalServerError()
-                .body(ApiResponse.error(500, ex.getMessage() == null ? "服务内部异常" : ex.getMessage()));
+        return json(500, ex.getMessage() == null ? "服务内部异常" : ex.getMessage());
     }
 
     private HttpStatus resolveStatus(int code) {
