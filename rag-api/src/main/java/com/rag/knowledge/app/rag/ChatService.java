@@ -1,6 +1,7 @@
 package com.rag.knowledge.app.rag;
 
 import com.rag.knowledge.app.diag.RunDiagnostics;
+import com.rag.knowledge.app.model.ContextOverflow;
 import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.RagProperties;
 import com.rag.knowledge.db.ChatRepository;
@@ -209,6 +210,10 @@ public class ChatService {
 
             @Override
             public void onError(Throwable error) {
+                if (ContextOverflow.from(error)) {
+                    overflow(answerId, answer, plan, sink, error);
+                    return;
+                }
                 String reason = rootMessage(error);
                 log.warn("流式生成失败，answerId={}：{}", answerId, reason);
                 // 已经吐出去的字要保住：回填成 INTERRUPTED 而不是删掉，界面上能看到断在哪里
@@ -217,6 +222,36 @@ public class ChatService {
                 sink.complete();
             }
         });
+    }
+
+    /**
+     * 超限发生在生成开始之前，一个都还没开始想：状态记 FAILED 而不是 INTERRUPTED，
+     * 评测时才分得清「装配失败」和「生成中断」是两类原因。
+     * <p>
+     * 不在这里自动重装配：引用编号已经随 meta 发给前端并写进库里，偷偷少装两块会让 [2] 指向另一段话。
+     * 所以把模型回传的真实 n_ctx 说清楚，让人去调 top-k 或配置，而不是让程序猜。
+     */
+    private void overflow(UUID answerId, StringBuilder answer, ContextPlanner.Plan plan, Sink sink, Throwable error) {
+        RagProperties.Budget budget = props.retrieval().budget();
+        Integer realCtx = ContextOverflow.reportedCtx(error);
+        Integer promptTokens = ContextOverflow.reportedPromptTokens(error);
+        String reason = "配置窗口 " + budget.nCtx() + " token，模型侧 "
+                + (realCtx == null ? "未回传窗口" : "回传 " + realCtx + " token")
+                + "，本次提示词 " + (promptTokens == null ? "?  token" : promptTokens + " token")
+                + "，装配 " + plan.usedChars() + " 字";
+        diagnostics.contextOverflow(budget.nCtx(), realCtx, reason);
+        log.warn("上下文超出模型窗口，answerId={}：{}", answerId, reason);
+        chats.markAnswer(answerId, answer.toString(), STATUS_FAILED);
+        List<String> hints = new ArrayList<>();
+        hints.add("调小 rag.retrieval.top-k 或 rag.ingest.chunk.child-chars，少装几块");
+        if (realCtx != null && realCtx > budget.nCtx()) {
+            hints.add("模型实际窗口是 " + realCtx + "，把 RAG_LLM_N_CTX 提到它，否则每轮白白少装资料");
+        } else if (realCtx != null) {
+            hints.add("模型实际窗口只有 " + realCtx + "，要在 LM Studio 里调大 context，"
+                    + "或把 RAG_LLM_N_CTX 降到 " + realCtx);
+        }
+        sink.error(413, "上下文超出模型窗口：" + reason + " ｜ " + String.join(" ｜ ", hints));
+        sink.complete();
     }
 
     /**

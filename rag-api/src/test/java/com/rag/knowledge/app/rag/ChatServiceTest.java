@@ -92,6 +92,7 @@ class ChatServiceTest {
         assertThat(diagnostics.snapshot().counters().refused()).isEqualTo(1);
     }
 
+    /** 截断要拿小窗口试，别绑在默认预算上：默认窗口跟着模型走（现在 16384），换一次模型这条就会静默失效。 */
     @Test
     void contextTruncationIsCountedAndSaysSoInTheMetaFrame() {
         stubSession();
@@ -99,7 +100,7 @@ class ChatServiceTest {
         stubAnswerRow();
         generate("答");
 
-        service().ask(request("这一轮的正文比预算还长"), sink);
+        service(new RagProperties.Budget(4096, 700, 900, 1.0, 4, 800)).ask(request("这一轮的正文比预算还长"), sink);
 
         assertThat(sink.meta.contextTruncated()).isTrue();
         assertThat(diagnostics.snapshot().counters().contextTruncated()).isEqualTo(1);
@@ -222,6 +223,38 @@ class ChatServiceTest {
                 any());
     }
 
+    /**
+     * 超限的响应体是实测抓下来的原样文本（192.168.1.61:1234，2026-11-16），并且被 langchain4j 包在 cause 里：
+     * 只看最外层异常永远读不到 n_ctx，所以这条同时钉住「往上溯 cause」这件事。
+     */
+    @Test
+    void contextOverflowGetsItsOwnBranchInsteadOfTheGenericOutageMessage() {
+        stubSession();
+        stubSearch(List.of(hit(11, "正文")));
+        stubAnswerRow();
+        doAnswer(invocation -> {
+            StreamingChatResponseHandler handler = invocation.getArgument(1);
+            handler.onError(new RuntimeException("Chat completion failed",
+                    new IllegalStateException("{\"error\":\"Engine protocol predict request returned 400: "
+                            + "{\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (36005 tokens) "
+                            + "exceeds the available context size (16384 tokens), try increasing it\\\","
+                            + "\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":36005,"
+                            + "\\\"n_ctx\\\":16384}}\"}")));
+            return null;
+        }).when(streamingModel).chat(anyList(), any(StreamingChatResponseHandler.class));
+
+        service().ask(request("资料比窗口还长"), sink);
+
+        // 一个字都没生成，所以没有 delta；状态也不是 INTERRUPTED：那是「模型半路死了」，这是「预算配错了」
+        assertThat(sink.events).containsExactly("meta", "error", "complete");
+        assertThat(sink.errorCode).isEqualTo(413);
+        assertThat(sink.errorMessage).contains("上下文超出模型窗口").contains("36005 token").contains("回传 16384");
+        verify(chats).markAnswer(ANSWER_ID, "", ChatService.STATUS_FAILED);
+        assertThat(diagnostics.snapshot().counters().contextOverflow()).isEqualTo(1);
+        assertThat(diagnostics.snapshot().lastContextOverflow().reportedCtx()).isEqualTo(16384);
+        assertThat(diagnostics.snapshot().lastContextOverflow().configuredCtx()).isEqualTo(16384);
+    }
+
     @Test
     void sessionWithoutExplicitScopeSearchesItsOwnKnowledgeBase() {
         when(chats.requireSession(SESSION_ID)).thenReturn(session(List.of(42L)));
@@ -329,18 +362,23 @@ class ChatServiceTest {
     }
 
     private ChatService service() {
-        return new ChatService(chats, knowledgeBases, retrieval, searchService, new ContextPlanner(),
-                streamingModel, props(), json, diagnostics);
+        return service(RagProperties.Retrieval.defaults().budget());
     }
 
-    private static RagProperties props() {
+    private ChatService service(RagProperties.Budget budget) {
+        return new ChatService(chats, knowledgeBases, retrieval, searchService, new ContextPlanner(),
+                streamingModel, props(budget), json, diagnostics);
+    }
+
+    private static RagProperties props(RagProperties.Budget budget) {
         return new RagProperties(
                 new RagProperties.LmStudio("http://localhost:1234/v1", "lm-studio", "chat", "bge",
                         0.3, 0.8, null, Duration.ofSeconds(5), 1),
                 new RagProperties.Storage("target/rag-test"),
                 new RagProperties.Embedding(768, 16),
                 RagProperties.Ingest.defaults(),
-                RagProperties.Retrieval.defaults(), RagProperties.Archive.defaults());
+                new RagProperties.Retrieval("hybrid", 6, 40, 60, 0.45, 0.012, true, budget),
+                RagProperties.Archive.defaults());
     }
 
     private static ChatRepository.Session session(List<Long> kbIds) {

@@ -23,7 +23,9 @@ public class LmStudioHttpClient {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     // RestClient 只走 /v1/models、回显自检这类小请求；真正的长生成走 LangChain4j 客户端的 90s 超时。
     // 不设上限的话一次模型服务卡顿会把 /api/health 拖住 90s。
-    private static final Duration SMALL_REQUEST_READ_TIMEOUT = Duration.ofSeconds(15);
+    // 上限必须盖得住「模型没驻留时的加载时间」：实测冷加载 glm 0.17s（已驻留）、qwen2.5-vl 31.3s（现拉），
+    // 卡在 15s 的表现是自检报「模型服务调用失败」，而服务其实好好的——只是还没装完。
+    private static final Duration SMALL_REQUEST_READ_TIMEOUT = Duration.ofSeconds(45);
 
     public static HttpClient.Builder jdk() {
         return HttpClient.newBuilder()

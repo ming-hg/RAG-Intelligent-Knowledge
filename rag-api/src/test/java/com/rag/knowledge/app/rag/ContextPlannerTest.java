@@ -15,7 +15,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContextPlannerTest {
 
     private final ContextPlanner planner = new ContextPlanner();
-    private final RagProperties.Budget budget = RagProperties.Budget.defaults();
+    // 预算算术用固定的 4096：默认窗口跟着模型走（现在是 16384），把断言绑在默认值上等于每换一次模型改一遍数
+    private final RagProperties.Budget budget = new RagProperties.Budget(4096, 700, 900, 1.0, 4, 800);
 
     @Test
     void budgetSubtractsAnswerReserveTemplateAndConversation() {

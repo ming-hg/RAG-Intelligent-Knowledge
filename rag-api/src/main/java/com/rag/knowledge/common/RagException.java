@@ -44,4 +44,9 @@ public class RagException extends RuntimeException {
     public static RagException modelUnavailable(String message, String... hints) {
         return new RagException(503, message, hints);
     }
+
+    /** 装配出来的资料超过模型窗口，请求在生成开始之前就被拒：不是服务不可用，是配置对不上。 */
+    public static RagException contextOverflow(String message, String... hints) {
+        return new RagException(413, message, hints);
+    }
 }

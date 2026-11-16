@@ -111,14 +111,17 @@ public record RagProperties(LmStudio lmStudio, Storage storage, Embedding embedd
     }
 
     /**
-     * 上下文装配预算。nCtx 是当前已加载模型的真实窗口（实测 4096，超限直接 400），
-     * charsPerToken 保守取 1：中文约 1 字 1 token，算少了只是少带几块，算多了是整条请求失败。
+     * 上下文装配预算。nCtx 必须是**当前已加载模型的真实窗口**：同一台 LM Studio 上，
+     * qwen2.5-vl-7b 与 glm-4-9b-chat-1m 实测都是 16384（2026-11-16，靠超限的 400 回显 n_ctx 量的），
+     * 早先测到的 4096 是那次加载时的小配置。超限不会被静默截断，而是 HTTP 400 直接拒。
+     * charsPerToken 取 1.0：实测 60000 汉字 = 36005~40019 token，即 1 token ≈ 1.5 字，
+     * 所以按 1 字 1 token 算预算站在「少装」那一侧，宁可少带几块也不要撑爆窗口。
      */
     public record Budget(int nCtx, int outputReserveTokens, int templateChars, double charsPerToken,
                          int historyMaxTurns, int historyMaxChars) {
 
         public static Budget defaults() {
-            return new Budget(4096, 700, 900, 1.0, 4, 800);
+            return new Budget(16384, 700, 900, 1.0, 4, 800);
         }
     }
 

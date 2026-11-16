@@ -1,6 +1,8 @@
 package com.rag.knowledge;
 
+import com.rag.knowledge.app.model.ContextOverflow;
 import com.rag.knowledge.app.model.ModelService;
+import com.rag.knowledge.common.RagException;
 import com.rag.knowledge.config.AiConfig;
 import com.rag.knowledge.config.LmStudioHttpClient;
 import com.rag.knowledge.config.RagProperties;
@@ -24,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.ThrowableAssert.catchThrowable;
 
 /**
  * 真机门：默认跳过，`LM_STUDIO_IT=true mvn verify` 显式打开。
@@ -33,9 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LmStudioConnectivityIT {
 
     private static final String BASE_URL = env("LM_STUDIO_BASE_URL", "http://192.168.1.61:1234/v1");
-    private static final String CHAT_MODEL = env("LM_STUDIO_CHAT_MODEL", "qwen2.5-vl-7b-instruct");
+    private static final String CHAT_MODEL = env("LM_STUDIO_CHAT_MODEL", "glm-4-9b-chat-1m");
     private static final String EMBEDDING_MODEL = env("LM_STUDIO_EMBEDDING_MODEL", "text-embedding-bge-base-zh-v1.5");
     private static final int DIM = Integer.parseInt(env("RAG_EMBEDDING_DIM", "768"));
+    private static final int N_CTX = Integer.parseInt(env("RAG_LLM_N_CTX", "16384"));
 
     private static String env(String key, String fallback) {
         String value = System.getenv(key);
@@ -73,6 +77,25 @@ class LmStudioConnectivityIT {
         assertThat(echo.echoedChat()).isEqualTo(CHAT_MODEL);
     }
 
+    /**
+     * 模型加载后的真实窗口没有查询端点，只有把它撑爆才肯说（实测响应体里带 {@code n_ctx}）。
+     * 这条把「RAG_LLM_N_CTX 是不是配小了」变成一次断言：配小了不会有任何报错，只会每轮白白少装几块资料。
+     */
+    @Test
+    void overflowsTheWindowToReadTheRealContextLength() {
+        ModelService service = modelService(props());
+        String oversized = "混合检索与倒数排名融合的说明，两路结果融合后再一起截断。".repeat(1200);
+
+        Throwable thrown = catchThrowable(() -> service.testChat(oversized));
+
+        assertThat(thrown).isInstanceOf(RagException.class);
+        assertThat(((RagException) thrown).code()).as("超限必须是独立的 413，不是笼统的模型不可用").isEqualTo(413);
+        Integer realCtx = ContextOverflow.reportedCtx(thrown.getMessage());
+        assertThat(realCtx).as("超限响应里必须带着模型真实窗口：%s", thrown.getMessage()).isNotNull();
+        assertThat(N_CTX).as("配置 n-ctx=%d 比模型真实窗口 %d 还大：要么在 LM Studio 里调大 context，要么降低配置",
+                N_CTX, realCtx).isLessThanOrEqualTo(realCtx);
+    }
+
     @Test
     void batchEmbeddingKeepsDimensionAndOrder() {
         EmbeddingModel embeddingModel = new AiConfig().embeddingModel(props());
@@ -91,6 +114,7 @@ class LmStudioConnectivityIT {
 
     @Test
     void streamingPartialsRebuildTheCompleteAnswer() throws InterruptedException {
+
         StreamingChatModel streaming = new AiConfig().streamingChatModel(props());
         List<String> partials = new ArrayList<>();
         CountDownLatch done = new CountDownLatch(1);

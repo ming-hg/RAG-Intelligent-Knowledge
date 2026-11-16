@@ -30,8 +30,39 @@ class DiagnosticsApiTest {
         assertThat(view.warnings()).isEmpty();
         assertThat(view.effective().mode()).isEqualTo("hybrid");
         assertThat(view.effective().embeddingDim()).isEqualTo(768);
-        // 预算回显的是「不带历史与问题时最多能装多少字」，实测 4096 - 700 - 900 = 2496
-        assertThat(view.effective().contextBudgetChars()).isEqualTo(2496);
+        // 预算回显的是「不带历史与问题时最多能装多少字」：16384 - 700 - 900 = 14784（窗口取自模型实测）
+        assertThat(view.effective().contextBudgetChars()).isEqualTo(14784);
+        assertThat(view.effective().nCtx()).isEqualTo(16384);
+    }
+
+    /**
+     * n-ctx 配得比模型真实窗口小，不会有任何报错，只会每轮白白少装资料——这件事只能从模型回显里反出来。
+     * 所以撞过一次 400 之后，diagnostics 必须把「配置小于实测」这句话讲出来。
+     */
+    @Test
+    void anUnderconfiguredWindowIsCalledOutAfterTheModelRefusesOnce() {
+        RagProperties.Budget small = new RagProperties.Budget(4096, 700, 900, 1.0, 4, 800);
+        RagProperties.Retrieval retrieval = new RagProperties.Retrieval("hybrid", 6, 40, 60, 0.45, 0.012, true, small);
+        diagnostics.contextOverflow(4096, 16384, "模型侧回传 16384");
+
+        DiagnosticsController.View view = controller(props(retrieval)).diagnostics().data();
+
+        assertThat(view.run().counters().contextOverflow()).isEqualTo(1);
+        assertThat(view.warnings()).anySatisfy(w -> assertThat(w)
+                .contains("真实窗口是 16384").contains("RAG_LLM_N_CTX").contains("2496"));
+    }
+
+    /** 反方向更糟：配置比模型给的大，请求会被 400 拒掉，报错要指出去 LM Studio 调 context 这条路。 */
+    @Test
+    void anOverconfiguredWindowPointsAtLmStudio() {
+        RagProperties.Budget big = new RagProperties.Budget(32768, 700, 900, 1.0, 4, 800);
+        diagnostics.contextOverflow(32768, 16384, "模型侧回传 16384");
+
+        DiagnosticsController.View view = controller(props(new RagProperties.Retrieval("hybrid", 6, 40, 60,
+                0.45, 0.012, true, big))).diagnostics().data();
+
+        assertThat(view.warnings()).anySatisfy(w -> assertThat(w)
+                .contains("n-ctx=32768").contains("LM Studio 里调大 context"));
     }
 
     @Test

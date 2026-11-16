@@ -134,8 +134,7 @@ public class ModelService {
                     .retrieve()
                     .body(Map.class);
         } catch (RestClientException ex) {
-            throw RagException.modelUnavailable("模型服务调用失败：" + props.lmStudio().baseUrlV1() + path
-                    + "：" + rootOf(ex), "确认 LM Studio 已启动且该端口可从本机访问");
+            throw modelUnavailable("模型服务调用失败：" + props.lmStudio().baseUrlV1() + path, ex);
         }
         if (body == null) {
             throw RagException.modelUnavailable("模型服务返回空响应：" + path);
@@ -143,18 +142,14 @@ public class ModelService {
         // LM Studio 连未知路径都用 HTTP 200 + {"error": "..."} 返回，不能把 200 当成成功
         Object error = body.get("error");
         if (error != null) {
-            throw RagException.modelUnavailable("模型服务返回错误：" + error);
+            String detail = String.valueOf(error);
+            if (ContextOverflow.is(detail)) {
+                throw contextOverflow("模型服务返回错误", detail);
+            }
+            throw RagException.modelUnavailable("模型服务返回错误：" + detail);
         }
         Object echoed = body.get("model");
         return echoed == null ? null : echoed.toString();
-    }
-
-    private static String rootOf(Throwable ex) {
-        Throwable t = ex;
-        while (t.getCause() != null && t.getCause() != t) {
-            t = t.getCause();
-        }
-        return t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
     }
 
     private static String requireText(String value, String field) {
@@ -165,6 +160,9 @@ public class ModelService {
     }
 
     private RagException modelUnavailable(String message, RuntimeException ex) {
+        if (ContextOverflow.from(ex)) {
+            return contextOverflow(message, ContextOverflow.text(ex));
+        }
         Throwable root = ex;
         while (root.getCause() != null && root.getCause() != root) {
             root = root.getCause();
@@ -172,6 +170,23 @@ public class ModelService {
         return RagException.modelUnavailable(message + "：" + root.getMessage(),
                 "确认 LM Studio 已加载该模型（模型名需与 /v1/models 返回的 id 完全一致）",
                 "跨机部署时检查 " + props.lmStudio().baseUrlV1() + " 是否可从本机访问");
+    }
+
+    /**
+     * 超限与不可用是两种故障：一种改 `rag.*` 配置，一种改 LM Studio。合成一条 503，
+     * 用户就会去重启一个本来就好的服务。
+     */
+    private RagException contextOverflow(String message, String detail) {
+        Integer realCtx = ContextOverflow.reportedCtx(detail);
+        String window = "缩短输入，或把 rag.retrieval.budget.n-ctx 与 LM Studio 实际加载的 context 对齐";
+        if (realCtx == null) {
+            return RagException.contextOverflow(message + "：上下文超出模型窗口", window);
+        }
+        return RagException.contextOverflow(message + "：上下文超出模型窗口（模型侧回传 n_ctx=" + realCtx + "）", window,
+                realCtx > props.retrieval().budget().nCtx()
+                        ? "模型侧窗口 " + realCtx + " 比配置的 " + props.retrieval().budget().nCtx()
+                                + " 大：调大 RAG_LLM_N_CTX 才能装下更多资料"
+                        : "模型侧窗口只有 " + realCtx + "：要么在 LM Studio 里调大 context，要么把 RAG_LLM_N_CTX 降到它");
     }
 
     // LM Studio 在各版本里往 /v1/models 里塞了不同字段，只认 id，其余忽略

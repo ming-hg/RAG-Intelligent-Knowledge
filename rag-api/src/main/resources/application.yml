@@ -48,7 +48,9 @@ rag:
     api-key: ${LM_STUDIO_API_KEY:lm-studio}
     # 模型名必须与 /v1/models 返回的 id 逐字符一致：LM Studio 对认不出的名字不报错，
     # 会用当前已加载的模型应答（实测 192.168.1.61 传错 id 也返回 200），静默换模型比报错更难查
-    chat-model: ${LM_STUDIO_CHAT_MODEL:qwen2.5-vl-7b-instruct}
+    # 用纯文本模型：全链路只往模型发文本，图片从不进模型（Tika 不做 OCR），所以视觉权重是白占显存
+    # 换模型只改这一行即可：LM_STUDIO_CHAT_MODEL=qwen2.5-vl-7b-instruct，但要同步核对 n-ctx
+    chat-model: ${LM_STUDIO_CHAT_MODEL:glm-4-9b-chat-1m}
     embedding-model: ${LM_STUDIO_EMBEDDING_MODEL:text-embedding-bge-base-zh-v1.5}
     temperature: 0.3
     top-p: 0.8
@@ -77,12 +79,14 @@ rag:
     # 命中子块时把父块也带上：子块够准，父块够全
     parent-context: true
     budget:
-      # 当前 chat 模型加载后的真实窗口（实测 4096）。调大要同时在 LM Studio 里调 context
-      n-ctx: ${RAG_LLM_N_CTX:4096}
+      # 当前 chat 模型加载后的真实窗口。实测 192.168.1.61 上 glm-4-9b-chat-1m 与 qwen2.5-vl-7b 都是 16384
+      # （2026-11-16，用一条超限请求把 n_ctx 从 400 错误体里读出来的）。配小了不报错、只是白少装资料；
+      # 配大了会被 400 拒掉，那条分支见 ContextOverflow，报错里会回显模型侧真实窗口
+      n-ctx: ${RAG_LLM_N_CTX:16384}
       output-reserve-tokens: 700
       # 系统提示词 + 引用说明 + 问题本身的字符预留
       template-chars: 900
-      # 中文约 1 字 1 token，取 1.0 是故意保守
+      # 实测 1 个 token ≈ 1.5 个汉字（60000 字 = 36005~40019 token），按 1 字 1 token 算是刻意保守
       chars-per-token: 1.0
       history-max-turns: 4
       history-max-chars: 800
