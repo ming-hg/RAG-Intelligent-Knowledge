@@ -378,8 +378,10 @@ class ChatServiceTest {
     }
 
     private ChatService service(RagProperties.Budget budget) {
-        return new ChatService(chats, retrieval, searchService, new ContextPlanner(),
-                streamingModel, props(budget), json, diagnostics);
+        RagProperties props = props(budget);
+        return new ChatService(chats, retrieval, searchService,
+                new EvidencePlanner(retrieval, new ContextPlanner(), props),
+                streamingModel, props, json, diagnostics);
     }
 
     private static RagProperties props(RagProperties.Budget budget) {

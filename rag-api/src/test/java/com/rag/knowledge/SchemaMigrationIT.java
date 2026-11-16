@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 在真实 pgvector 上校验 V1/V2 迁移产物与检索谓词能力。
+ * 在真实 pgvector 上校验 V1/V2/V3 迁移产物与检索谓词能力。
  * 该用例故意用不含 zhparser 的官方镜像，覆盖「中文分词不可用 → 退化 pg_trgm」这条分支。
  */
 @Testcontainers(disabledWithoutDocker = true)
@@ -46,7 +46,7 @@ class SchemaMigrationIT {
                 WHERE table_schema = 'public' ORDER BY table_name
                 """, String.class);
         assertTrue(tables.containsAll(List.of("knowledge_base", "kb_document", "kb_segment", "kb_task",
-                "chat_session", "chat_message")), "实际表: " + tables);
+                "chat_session", "chat_message", "eval_case", "eval_run", "eval_result")), "实际表: " + tables);
     }
 
     @Test

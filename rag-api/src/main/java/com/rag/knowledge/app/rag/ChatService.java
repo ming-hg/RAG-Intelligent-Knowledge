@@ -48,19 +48,20 @@ public class ChatService {
     private final ChatRepository chats;
     private final RetrievalRepository retrieval;
     private final HybridSearchService searchService;
-    private final ContextPlanner planner;
+    private final EvidencePlanner evidence;
     private final StreamingChatModel streamingModel;
     private final RagProperties props;
     private final ObjectMapper json;
     private final RunDiagnostics diagnostics;
 
     public ChatService(ChatRepository chats, RetrievalRepository retrieval,
-                       HybridSearchService searchService, ContextPlanner planner, StreamingChatModel streamingModel,
-                       RagProperties props, ObjectMapper json, RunDiagnostics diagnostics) {
+                       HybridSearchService searchService, EvidencePlanner evidence,
+                       StreamingChatModel streamingModel, RagProperties props, ObjectMapper json,
+                       RunDiagnostics diagnostics) {
         this.chats = chats;
         this.retrieval = retrieval;
         this.searchService = searchService;
-        this.planner = planner;
+        this.evidence = evidence;
         this.streamingModel = streamingModel;
         this.props = props;
         this.json = json;
@@ -138,14 +139,11 @@ public class ChatService {
         RagProperties.Budget budget = props.retrieval().budget();
         List<ChatRepository.Message> recent = trimHistory(history, budget);
         int conversationChars = recent.stream().mapToInt(m -> m.contextText().length()).sum() + question.length();
-        int budgetChars = ContextPlanner.budgetChars(budget, conversationChars);
-
-        Map<Long, String> parents = retrieval.parentContents(outcome.hits().stream().map(SearchHit::parentId).toList());
-        ContextPlanner.Plan plan = planner.assemble(outcome.hits(), parents, budgetChars,
-                props.retrieval().parentContext());
+        // 装配这一步交给 EvidencePlanner：评测集算「会不会拒答」用的是同一个方法，两处不能各写一遍
+        ContextPlanner.Plan plan = evidence.plan(outcome.hits(), conversationChars);
         List<SourceView> sources = plan.slots().stream().map(ChatService::toSource).toList();
         UUID answerId = chats.beginAnswer(session.id(), "", question, jsonOf(sources),
-                jsonOf(metaOf(outcome, plan, budgetChars)), traceId);
+                jsonOf(metaOf(outcome, plan)), traceId);
         MetaView meta = new MetaView(session.id(), questionId, answerId, outcome.requested().name(),
                 outcome.effective().name(), outcome.engine().name(), outcome.degraded(), outcome.vectorFailure(),
                 sources, plan.usedChars(), plan.budgetChars(), plan.unplacedHits(), plan.truncated(),
@@ -344,8 +342,7 @@ public class ChatService {
                 hit.vectorRank(), hit.keywordRank(), hit.rrf(), hit.similarity());
     }
 
-    private static Map<String, Object> metaOf(HybridSearchService.Outcome outcome, ContextPlanner.Plan plan,
-                                              int budgetChars) {
+    private static Map<String, Object> metaOf(HybridSearchService.Outcome outcome, ContextPlanner.Plan plan) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("requestedMode", outcome.requested().name());
         meta.put("effectiveMode", outcome.effective().name());
@@ -354,7 +351,7 @@ public class ChatService {
         meta.put("hitCount", outcome.hits().size());
         meta.put("usedBlocks", plan.slots().size());
         meta.put("contextChars", plan.usedChars());
-        meta.put("budgetChars", budgetChars);
+        meta.put("budgetChars", plan.budgetChars());
         meta.put("unplacedHits", plan.unplacedHits());
         meta.put("contextTruncated", plan.truncated());
         meta.put("retrievalMs", outcome.tookMs());

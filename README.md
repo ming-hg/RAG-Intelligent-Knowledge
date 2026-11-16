@@ -11,26 +11,29 @@ Docker 引擎能应答后的连库实测按 [docs/实测指导.md](docs/实测�
 
 | 目录 | 说明 |
 |---|---|
-| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d/M5f/M6 已落地 |
-| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c/M5d 已落地 |
+| `rag-api` | 新后端（Java 17 + Boot 4.1.2），M1/M2/M3/M5a/M5b/M5c/M5d/M5e/M5f/M6 已落地 |
+| `rag-web` | 前端（Vue 3.5 + TS + Vite 8），M4/M5a/M5b/M5c/M5d 已落地（M5e 评测只有接口，没做页面） |
 | `rag-server` | 旧 Node 实现，M6 验收通过后删除 |
 | `deploy` | `start.sh` / `stop.sh` / `smoke.sh` 与 `docker-compose.yml`、自建的 zhparser PG 镜像 |
 | `samples` | 连库实测用的样本文档（事实写死，可当场判定对错） |
-| `docs` | 方案与 20 条 ADR、硬性约束、接入手册、连库实测指导；另有 `简历项目经历.md` / `面试学习手册.md`（数字全部可回查代码） |
+| `docs` | 方案与 21 条 ADR、硬性约束、接入手册、连库实测指导；另有 `简历项目经历.md` / `面试学习手册.md`（数字全部可回查代码） |
 
 ## 跑起来
 
 ```bash
 cp .env.example .env      # 默认值就是本机实测环境；只改 LM_STUDIO_BASE_URL 与两个模型名
 deploy/start.sh           # 起 PG（首次编译 zhparser 镜像 5-15 分钟）→ 打包并起 rag-api → 起 rag-web → 自检门
-deploy/smoke.sh           # 端到端回归：health → 上传 samples → 等 READY → 三种模式检索 → 流式问答 → 块级禁用可逆 → 诊断对账
+deploy/smoke.sh           # 端到端回归：health → 上传 samples → 等 READY → 三种模式检索 → 流式问答 → 块级禁用可逆 → 评测跑分 → 诊断对账
 deploy/stop.sh            # 停；--keep-db 只停应用，--purge-data 才会删数据卷（要输入 PURGE 确认）
 ```
 
 脚本每一步失败都会停下并给出「去哪儿改什么」，Docker 引擎没应答（本机实测是 Docker Desktop 进程没在运行，
 不是虚拟化没开）时不会干等。
-`deploy/smoke.sh` 就是这条约定的产物：[docs/实测指导.md](docs/实测指导.md) §4~§11 那段手点验收，它一条命令跑完，全绿代表这批里程碑没退化。
-默认不破坏数据；加 `--archive` 才会删掉该库全部文档再导回来（归档「免重算」只能这么验）；
+`deploy/smoke.sh` 就是这条约定的产物：[docs/实测指导.md](docs/实测指导.md) §4~§12 那段手点验收，它一条命令跑完
+（11 步 / 不带 `--archive` 54 项、带 62 项断言），全绿代表这批里程碑没退化。
+默认不破坏数据；加 `--archive` 才会删掉该库全部文档再导回来（归档「免重算」只能这么验）——
+导出只带 `READY` 文档，所以那两份故意做坏的样本（`04`/`05`）和重复副本（`06`）跑完就不在列表里了，
+重跑一次不带 `--archive` 的上传步骤即可恢复；
 加 `--models` 让自检真去模型服务探一次 chat/embedding；
 `--shape-only` 只验接口契约，用来在没库没模型的环境（包括那份前端联调用的 mock）自检脚本自身。
 退出码：0 全绿 / 1 有失败 / 2 连不上后端或 node 版本不够（需要 20.19+ 或 22.12+）。
@@ -92,7 +95,7 @@ curl -F "file=@kb-1-20261115-213000.zip" "http://localhost:8080/api/knowledge-ba
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 219 例）：
+不连数据库也能验证的代码层测试（当前 260 例）：
 
 ```bash
 cd rag-api && mvn -o test
@@ -117,6 +120,19 @@ curl -X PATCH -H "Content-Type: application/json" -d '{"rating":1}' \
 curl -X PATCH -H "Content-Type: application/json" -d '{"annotatedAnswer":"正确的说法是……"}' \
   http://localhost:8080/api/chat/messages/{answerId}
 ```
+
+评测跑分（M5e，只走检索、不生成答案，一轮几秒钟；没有前端页面，理由见 docs/重构方案.md §20）：
+
+```bash
+curl -X POST http://localhost:8080/api/evaluation/cases -H "Content-Type: application/json" \
+  -d '{"kbId":1,"question":"数据库备份保留多少天","expectMarker":"35","expectDoc":"运维手册"}'
+curl -X POST "http://localhost:8080/api/evaluation/run?kbId=1&mode=hybrid"   # 也可以带 &topK=50 逼一次预算截断
+curl "http://localhost:8080/api/evaluation/runs?limit=5"                     # 每轮带参数快照与相对上一轮的 delta
+```
+
+`hit@k / mrr` 量的是检索排第几，`refusalAccuracy` 量「库里真没有」有没有被压住，
+`truncatedCaseRate` 量装配吃不吃得下——三者刻意分开：召回 6 块只装下 5 块时 `hit@K` 仍是 1.0，
+但这一项会读出「模型没读到那 1 块」，指向 `n_ctx` / `parent-max-chars` 而不是阈值。
 
 真机模型链路校验（默认跳过，会把地址、模型名、维度、批量、流式一次验完）：
 

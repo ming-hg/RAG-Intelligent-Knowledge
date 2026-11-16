@@ -24,7 +24,8 @@ const USAGE = `用法：node deploy/smoke.mjs [参数]
   --models              health 额外带 ?models=true，并要求 chat/embedding 探针不是 DOWN
   --ingest-timeout=SEC  等入库跑到终态的上限，默认 600（首次加载 embedding 模型就要半分钟）
   --stream-timeout=SEC  流式问答两段之间的静默上限，默认 120
-  --archive             加跑归档导出/删除/导入回归（破坏性：会删掉该库全部文档再导回来）
+  --archive             加跑归档导出/删除/导入回归（破坏性：删掉该库全部文档再导回来；
+                        导出只带 READY 文档，所以 FAILED 与重复副本不会回来，重跑上传步骤即可恢复）
   --shape-only          跳过依赖 samples 内容的断言，只验接口契约
   --help                看这个
 
@@ -302,13 +303,15 @@ const SEARCH_FACTS = [
   { q: 'RRF 的平滑常数 k 取多少', mode: 'hybrid', doc: '术语表', want: '60' },
 ]
 const ABSENT_TOKEN = 'KB-ZZTOKEN-42'
+/** 评测用的负例：库里没有食堂，理想行为是拒答。真实结果按模式各报各的，见第 9 步。 */
+const NEGATIVE_QUESTION = '食堂今天几点关门'
 const CHAT_QUESTION = '数据库备份保留多少天？请给出出处。'
 
 // ---------------------------------------------------------------- 主流程
 
 const uploads = []
 let kbId = opt.kb
-/** 问答的 meta 帧留着给第 10 步对照：SSE 说的降级/截断，计数端点必须也说。 */
+/** 问答的 meta 帧留着给第 11 步对照：SSE 说的降级/截断，计数端点必须也说。 */
 let lastChatMeta = null
 
 async function main() {
@@ -324,6 +327,7 @@ async function main() {
   await stepNegative()
   await stepChat()
   await stepDisableSegment()
+  await stepEvaluation()
   if (opt.archive) await stepArchive()
   else skip('归档导出 / 删除 / 导入', '未带 --archive（该步骤会删除该库全部文档再导回来）')
   await stepDiagnostics()
@@ -648,9 +652,160 @@ async function stepDisableSegment() {
   })
 }
 
+/**
+ * 第 9 步：把「这套检索现在什么样」压成一个能前后比较的数字。
+ * <p>
+ * 判据直接取自第 5 步那张事实表，不是另写一批：跑分说「找不到」而检索步说「找得到」，
+ * 这两条必须是同一件事，否则评测只是在自我表扬。用例是这里临时建的，跑完删掉——
+ * 而 {@code eval_result} 带着当时的问句与判据，删完仍然读得回，这条契约也在最后一步里验掉。
+ */
+async function stepEvaluation() {
+  step('9 评测集跑分（只走检索，不花模型）')
+  const created = []
+  const runIds = []
+  let supported = true
+
+  await check('GET /evaluation/cases 形状', async () => {
+    let env
+    try {
+      env = await api('GET', '/evaluation/cases', { params: { kbId } })
+    } catch (err) {
+      if (err instanceof ApiError && (err.code === 404 || err.code === 405)) {
+        supported = false
+        return skip('评测段', '这个后端没有 /api/evaluation（真后端 2.0 起才有；mock 没有）')
+      }
+      throw err
+    }
+    assert(Array.isArray(env.data), `data 不是数组：${JSON.stringify(env.data).slice(0, 100)}`)
+    for (const c of env.data) {
+      assert(typeof c.shouldAnswer === 'boolean' && typeof c.enabled === 'boolean',
+        `用例缺 shouldAnswer/enabled：${JSON.stringify(c).slice(0, 80)}`)
+    }
+    return `已有 ${env.data.length} 条用例`
+  })
+  if (!supported) return
+
+  await check('正例不给判据 → 停在未启用；强行 PATCH 启用 → 400', async () => {
+    const env = await api('POST', '/evaluation/cases',
+      { json: { kbId, question: '这条故意不写判据', shouldAnswer: true } })
+    assert(env.data.enabled === false, `没判据的正例直接启用了：${JSON.stringify(env.data).slice(0, 100)}`)
+    assert(env.message.includes('未启用'), `信封没说清它在等标注：${env.message}`)
+    await apiFails('PATCH', `/evaluation/cases/${env.data.id}`, { json: { enabled: true } }, 400)
+    await api('DELETE', `/evaluation/cases/${env.data.id}`)
+    return '待标注不进跑分，且没有旁路'
+  })
+
+  await checkFacts('按第 5 步事实表建用例，再补一条该拒答的负例', async () => {
+    for (const f of SEARCH_FACTS) {
+      const env = await api('POST', '/evaluation/cases', {
+        json: { kbId, question: f.q, expectMarker: f.want, expectDoc: f.doc, shouldAnswer: true, note: 'smoke' },
+      })
+      assert(env.data.enabled === true, `标了判据的正例没启用：${env.message}`)
+      created.push(env.data.id)
+    }
+    const neg = await api('POST', '/evaluation/cases',
+      { json: { kbId, question: NEGATIVE_QUESTION, shouldAnswer: false, note: 'smoke' } })
+    assert(neg.data.enabled === true, '负例不需要判据，应当建完就能用')
+    created.push(neg.data.id)
+    const list = await api('GET', '/evaluation/cases', { params: { kbId, enabledOnly: true } })
+    assert(list.data.length >= created.length, `启用用例只有 ${list.data.length} 条，建了 ${created.length} 条`)
+    return `${list.data.length} 条启用（正例 ${SEARCH_FACTS.length} + 负例 1）`
+  })
+
+  for (const mode of ['hybrid', 'keyword']) {
+    await checkFacts(`${mode} 这一轮：第 5 步说找得到的，跑分也必须说找得到`, async () => {
+      const env = await api('POST', '/evaluation/run', { params: { kbId, mode, note: `smoke-${mode}` } })
+      const d = env.data
+      assert(d.run.settings.mode === mode.toUpperCase(),
+        `请求 mode=${mode} 却跑了 ${d.run.settings.mode}：覆盖项没进参数快照`)
+      runIds.push(d.run.id)
+      for (const f of SEARCH_FACTS.filter((x) => x.mode === mode)) {
+        const row = d.cases.find((c) => c.question === f.q)
+        assert(row, `本轮结果里没有「${f.q}」这条`)
+        assert(row.correct === true,
+          `「${f.q}」在第 5 步命中《${f.doc}》且含「${f.want}」，跑分却说没找到：` +
+          `firstRank=${row.firstRank} hits=${row.hits} refused=${row.refused}｜${row.reason ?? ''}`)
+      }
+      const m = d.run.metrics
+      assert(typeof m.hitAtK === 'number' && m.hitAtK >= 0 && m.hitAtK <= 1, `hit@K 不是比例：${m.hitAtK}`)
+      assert(m.cases === d.cases.length, `metrics.cases=${m.cases} 与逐条结果 ${d.cases.length} 不一致`)
+      // 负例的 refused / correct / reason 必须说同一件事。早期版本把 refused 写死成 true，
+      // 于是同一条记录既写着「已拒答」又判「错」——正好把混合模式真实的 0 分藏掉了
+      const neg = d.cases.find((c) => c.question === NEGATIVE_QUESTION)
+      assert(neg, `本轮结果里没有负例「${NEGATIVE_QUESTION}」`)
+      assert(neg.correct === neg.refused,
+        `负例自相矛盾：refused=${neg.refused} 却判 correct=${neg.correct}｜${neg.reason ?? ''}`)
+      assert(m.refusalAccuracy === null || m.refusalAccuracy === (neg.correct ? 1 : 0),
+        `逐条判「${neg.correct ? '拒答成功' : '没拒答'}」，汇总却报拒答正确率 ${m.refusalAccuracy}`)
+      if (!neg.refused) {
+        assert(/被召回了/.test(neg.reason ?? ''),
+          `负例召回了 ${neg.hits} 条却没拒答，原因里却说不出是谁占了第 1 名`)
+      }
+      // 「召回 6 块只装下 3 块」既不是拒答也不该拉低 hit@k，所以它必须有自己的读数；
+      // 只要读数不为零，逐条原因里就得看得见是哪几条被预算挤出去了
+      assert('truncatedCaseRate' in m, 'metrics 里没有 truncatedCaseRate：装不装得下在报表里是隐形的')
+      if (m.truncatedCaseRate > 0) {
+        const flagged = d.cases.filter((c) => /没装进|装不下|装配一条都没装下/.test(c.reason ?? ''))
+        assert(flagged.length > 0,
+          `汇总说 ${m.truncatedCaseRate} 的正例有块没装进上下文，逐条结果里却一条都没标出来`)
+      }
+      return `hit@1=${m.hitAt1} hit@3=${m.hitAt3} hit@K=${m.hitAtK} MRR=${m.mrr} ` +
+        `空召回率=${m.emptyRecallRate ?? '不适用'} 拒答正确率=${m.refusalAccuracy ?? '不适用'} ` +
+        `截断率=${m.truncatedCaseRate ?? '不适用'}` +
+        ` ｜ 负例：${neg.refused ? `拒答（${neg.hits === 0 ? '一条没召回' : `召回 ${neg.hits} 条却一块都装不下`}）`
+          : `没拒答，召回 ${neg.hits} 条当资料`}`
+    })
+  }
+
+  await checkFacts('把 topK 顶到 50 逼一次截断：装不下的那部分要单独成一项读数', async () => {
+    const env = await api('POST', '/evaluation/run', { params: { kbId, mode: 'hybrid', topK: 50, note: 'smoke-budget' } })
+    const d = env.data
+    runIds.push(d.run.id)
+    const m = d.run.metrics
+    assert(d.run.settings.topK === 50 && d.run.settings.topKOverride === 50,
+      `topK=50 没进参数快照：${JSON.stringify(d.run.settings).slice(0, 160)}`)
+    assert('truncatedCaseRate' in m, 'metrics 里没有 truncatedCaseRate')
+    const dropped = d.cases.filter((c) => c.hits > 0 && /没装进|装不下|装配一条都没装下/.test(c.reason ?? ''))
+    if (m.truncatedCaseRate === 0) {
+      assert(dropped.length === 0, '逐条说有块没装下，汇总却报截断率 0')
+    }
+    return `topK=50 召回上限拉高后：截断率=${m.truncatedCaseRate ?? '不适用'}（${dropped.length} 条用例被预算挤掉）、` +
+      `hit@K=${m.hitAtK}（检索层不受预算影响）`
+  })
+
+  await checkFacts('参数快照说得出这两轮的差别，delta 也真的算出来了', async () => {
+    const env = await api('GET', '/evaluation/runs', { params: { limit: 5 } })
+    const latest = env.data.find((r) => r.id === runIds.at(-1))
+    assert(latest, `刚跑的 ${runIds.at(-1)} 没出现在列表里`)
+    for (const key of ['mode', 'topK', 'threshold', 'candidateK', 'rrfK', 'embeddingModel', 'embeddingDim', 'nCtx']) {
+      assert(latest.settings?.[key] !== undefined, `参数快照缺 ${key}`)
+    }
+    assert(Object.keys(latest.delta ?? {}).length > 0,
+      '相邻两轮之间 delta 为空：换了模式却算不出差值，前后对比就没了落点')
+    return `topK=${latest.settings.topK} 生效阈值=${latest.settings.threshold} ` +
+      `engine=${latest.settings.keywordEngine} ｜ delta ${JSON.stringify(latest.delta)}`
+  })
+
+  await checkFacts('删掉用例不删证据：那一轮仍读得回当时的问题与判据', async () => {
+    const ids = [...created]
+    for (const id of ids) await api('DELETE', `/evaluation/cases/${id}`)
+    const env = await api('GET', `/evaluation/runs/${runIds[0]}`)
+    assert(env.data.cases.length >= SEARCH_FACTS.length + 1,
+      `用例删完，历史行也跟着少了：只剩 ${env.data.cases.length} 行`)
+    assert(env.data.cases.every((c) => c.question), '历史行连当时的问句都没留住')
+    assert(env.data.cases.filter((c) => c.expectMarker).length >= SEARCH_FACTS.length,
+      '正例的判据没随结果留下来：用例一改，历史就说不出「当时在找什么」')
+    const left = await api('GET', '/evaluation/cases', { params: { kbId } })
+    const leaked = left.data.filter((c) => ids.includes(c.id))
+    assert(leaked.length === 0, `清理后还剩 ${leaked.length} 条 smoke 用例没删掉`)
+    created.length = 0
+    return `${env.data.cases.length} 行历史仍在，${ids.length} 条用例已清干净`
+  })
+}
+
 /** 破坏性：导出 → 删库内文档 → 导入，验「免重算」与人工状态原样带回。 */
 async function stepArchive() {
-  step('9 归档导出 / 删除 / 导入（破坏性）')
+  step('10 归档导出 / 删除 / 导入（破坏性）')
   let zip = null
   let exportedDocs = []
   let manifest = null
@@ -751,12 +906,12 @@ async function stepArchive() {
 }
 
 /**
- * 第 10 步：把整轮跑完的「安静失败」计数拿出来对账。
+ * 第 11 步：把整轮跑完的「安静失败」计数拿出来对账。
  * vectorDegraded>0 意味着前面第 5 步那批 rrf 分数是关键词路给的，整批检索结论都不作数——
- * 这一条放在最后，是因为它判的是「刚才那 9 步可不可信」。
+ * 这一条放在跑分之后，是因为它判的是「前面那 10 步可不可信」。
  */
 async function stepDiagnostics() {
-  step('10 运行诊断对账')
+  step('11 运行诊断对账')
   let view = null
   await check('GET /diagnostics 形状', async () => {
     let env
