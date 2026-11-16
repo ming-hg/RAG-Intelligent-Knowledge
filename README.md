@@ -27,7 +27,8 @@ deploy/smoke.sh           # 端到端回归：health → 上传 samples → 等 
 deploy/stop.sh            # 停；--keep-db 只停应用，--purge-data 才会删数据卷（要输入 PURGE 确认）
 ```
 
-脚本每一步失败都会停下并给出「去哪儿改什么」，Docker 引擎没起（Windows 虚拟化未开）时不会干等。
+脚本每一步失败都会停下并给出「去哪儿改什么」，Docker 引擎没应答（本机实测是 Docker Desktop 进程没在运行，
+不是虚拟化没开）时不会干等。
 `deploy/smoke.sh` 就是这条约定的产物：[docs/实测指导.md](docs/实测指导.md) §4~§11 那段手点验收，它一条命令跑完，全绿代表这批里程碑没退化。
 默认不破坏数据；加 `--archive` 才会删掉该库全部文档再导回来（归档「免重算」只能这么验）；
 `--shape-only` 只验接口契约，用来在没库没模型的环境（包括那份前端联调用的 mock）自检脚本自身。
@@ -41,8 +42,11 @@ deploy/stop.sh            # 停；--keep-db 只停应用，--purge-data 才会�
 下面是等价的手工步骤，脚本任一步卡住时可以逐条对照：
 
 ```bash
-# 1) 数据库（需要 Docker 引擎可用：Windows 上先确认 BIOS/WSL2 虚拟化已开）
-docker compose -f deploy/docker-compose.yml up -d
+# 0) 分词源码包（scws 1.2.3 + zhparser 2.3）只取一次，之后镜像构建全程离线
+sh deploy/pg/fetch-vendor.sh
+
+# 1) 数据库（判据：docker info --format '{{.ServerVersion}}' 能打印版本号；只有 Client 说明 Docker Desktop 没在运行）
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 
 # 2) 后端：默认值已按本机实测环境写好，不用改配置
 cd rag-api && mvn -o spring-boot:run
@@ -85,7 +89,7 @@ curl -F "file=@kb-1-20261115-213000.zip" "http://localhost:8080/api/knowledge-ba
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 208 例）：
+不连数据库也能验证的代码层测试（当前 216 例）：
 
 ```bash
 cd rag-api && mvn -o test
