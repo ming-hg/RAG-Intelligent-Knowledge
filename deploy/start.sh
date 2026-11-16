@@ -7,9 +7,32 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 if [ -f .env ]; then
+  # .env 是配置的来源，但调用方显式给的变量要赢：一次性临时覆盖（`RAG_LLM_N_CTX=60000 deploy/start.sh`
+  # 撞 413、`RAG_WEB_PORT=5174` 躲占用）如果被 .env 静默盖回去，人会以为改了其实没改。
+  # 顶掉的是哪几项当场说出来——优先级反过来一次就够，不该变成新的隐性来源。
+  _overridden=() _values=()
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _line=${_line#"${_line%%[![:space:]]*}"}   # 去掉行首空白
+    case "$_line" in
+      export[[:space:]]*) _line=${_line#export}
+                          _line=${_line#"${_line%%[![:space:]]*}"} ;;
+    esac
+    _key=${_line%%=*}
+    case "$_key" in [A-Za-z_]*) ;; *) continue ;; esac
+    case "$_key" in *[!A-Za-z0-9_]*) continue ;; esac   # 带空格/引号/注释开头的行不是赋值
+    if [ -n "${!_key+set}" ]; then
+      _overridden+=("$_key")
+      _values+=("${!_key}")
+    fi
+  done <.env
   set -a # shellcheck disable=SC1091
   . ./.env
   set +a
+  for _i in "${!_overridden[@]}"; do
+    printf -v "${_overridden[_i]}" '%s' "${_values[_i]}"
+    export "${_overridden[_i]}"
+    echo "   ! ${_overridden[_i]} 用命令行给的值，.env 里这一项本次不生效（想固定就改 .env）"
+  done
 else
   echo "! 没有 .env：全部用 application.yml 里的默认值。要改模型地址或数据库口令，先 cp .env.example .env"
 fi
