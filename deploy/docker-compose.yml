@@ -1,0 +1,34 @@
+name: rag-knowledge
+
+services:
+  postgres:
+    build:
+      context: ./pg
+      dockerfile: Dockerfile
+      # 官方源不可达时在这里覆盖，不藏到机器的 daemon 配置里（见 deploy/pg/Dockerfile 顶部说明）
+      args:
+        PG_BASE: ${RAG_PG_BASE:-pgvector/pgvector:pg17}
+        DEBIAN_MIRROR: ${RAG_DEBIAN_MIRROR:-}
+        PGDG_MIRROR: ${RAG_PGDG_MIRROR:-}
+    image: local/rag-postgres:pg17-zhparser
+    container_name: rag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rag_knowledge}
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_local_dev}
+      # zhparser 词典编码等参数（SCWS 默认已适配 UTF-8，一般无需改动）
+      SCWS_CHARSET: UTF-8
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - rag-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-rag_knowledge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  rag-pg-data:

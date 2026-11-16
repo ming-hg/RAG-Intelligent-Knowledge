@@ -1,0 +1,329 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e3e6eb;
+  --text: #1f2329;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --down: #dc2626;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.brand-name {
+  font-weight: 600;
+}
+
+.brand-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.nav a {
+  padding: 6px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.nav a:hover {
+  background: #eef1f5;
+}
+
+.nav a.router-link-active {
+  color: var(--accent);
+  background: #eaf1ff;
+  font-weight: 500;
+}
+
+.health-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.health-pill .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.health-pill.ok .dot {
+  background: var(--ok);
+}
+
+.health-pill.warn .dot {
+  background: var(--warn);
+}
+
+.health-pill.down .dot {
+  background: var(--down);
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.split {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 240px;
+  flex: none;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.inspector {
+  width: 340px;
+  flex: none;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  overflow: auto;
+  min-height: 0;
+}
+
+/* 侧栏是固定宽度，窗口一窄就会把正文挤成 0 宽，所以窄屏改成上下叠放，正文始终保留。 */
+@media (max-width: 1080px) {
+  .sidebar {
+    width: 200px;
+  }
+
+  .inspector {
+    width: 280px;
+  }
+}
+
+@media (max-width: 860px) {
+  .split {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .sidebar,
+  .inspector {
+    width: auto;
+    flex: none;
+    max-height: 240px;
+    border-left: 0;
+    border-right: 0;
+  }
+
+  .content {
+    flex: 1 0 auto;
+  }
+
+  .thread {
+    min-height: 240px;
+  }
+
+  .sidebar {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .inspector {
+    border-top: 1px solid var(--border);
+  }
+}
+
+.section-title {
+  padding: 10px 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #eef1f5;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.tag.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.tag.down {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.tag.ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+/* 引用上标：正文里的 [3] 点一下就在右侧面板定位到那条来源 */
+.cite {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #eaf1ff;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cite:hover {
+  background: #d5e4ff;
+}
+
+.markdown {
+  word-break: break-word;
+}
+
+.markdown pre {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  overflow: auto;
+}
+
+.markdown code {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.markdown table {
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+}
+
+.markdown blockquote {
+  margin: 8px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.scroll-y {
+  overflow-y: auto;
+  min-height: 0;
+}

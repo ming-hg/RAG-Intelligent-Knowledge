@@ -1,0 +1,133 @@
+server:
+  port: ${RAG_API_PORT:8080}
+
+spring:
+  application:
+    name: rag-api
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:rag_knowledge}
+    username: ${POSTGRES_USER:rag}
+    password: ${POSTGRES_PASSWORD:rag_local_dev}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+    # embedding 列维度是 schema 的一部分，必须与 rag.embedding.dim 同源，否则启动校验会报错
+    placeholders:
+      embedding_dim: ${RAG_EMBEDDING_DIM:768}
+  servlet:
+    multipart:
+      # 512MB 是给「整库归档包」留的：768 维向量 base64 后每块约 4KB，几百篇文档就轻松过 100MB。
+      # 单个文档上传仍由 rag.ingest.max-file-size-mb 限制，改这里不会放宽论文/PDF 的尺寸。
+      max-file-size: 512MB
+      max-request-size: 640MB
+      file-size-threshold: 2MB
+  mvc:
+    async:
+      # SSE 长连接不能被 MVC 层超时掐断，超时由业务层控制
+      request-timeout: -1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+rag:
+  lm-studio:
+    # 本机部署：http://localhost:1234/v1
+    # LM Studio 在另一台机器：http://<那台机器的局域网IP>:1234/v1
+    #   需在那台机器打开 LM Studio → Local Server → 「Serve on Local Network」，并放行其防火墙入站 TCP 1234
+    # 注意：baseUrl 必须以 /v1 结尾（代码里会自动补齐，但配置文件仍建议写全）
+    base-url: ${LM_STUDIO_BASE_URL:http://192.168.1.61:1234/v1}
+    # LM Studio 未开鉴权，占位串即可；若启用了 API Token 再用环境变量覆盖
+    api-key: ${LM_STUDIO_API_KEY:lm-studio}
+    # 模型名必须与 /v1/models 返回的 id 逐字符一致：LM Studio 对认不出的名字不报错，
+    # 会用当前已加载的模型应答（实测 192.168.1.61 传错 id 也返回 200），静默换模型比报错更难查
+    # 用纯文本模型：全链路只往模型发文本，图片从不进模型（Tika 不做 OCR），所以视觉权重是白占显存
+    # 换模型只改这一行即可：LM_STUDIO_CHAT_MODEL=qwen2.5-vl-7b-instruct，但要同步核对 n-ctx
+    chat-model: ${LM_STUDIO_CHAT_MODEL:glm-4-9b-chat-1m}
+    embedding-model: ${LM_STUDIO_EMBEDDING_MODEL:text-embedding-bge-base-zh-v1.5}
+    temperature: 0.3
+    top-p: 0.8
+    timeout: 90s
+    max-retries: 1
+  storage:
+    dir: ${RAG_STORAGE_DIR:./storage}
+  embedding:
+    # 实测 text-embedding-bge-base-zh-v1.5 返回 768 维；该机的 nomic-embed-text-v1.5 同样是 768 维，
+    # 维度相同时换模型不会改变 schema，但向量空间不互通，会污染检索
+    dim: ${RAG_EMBEDDING_DIM:768}
+    # 实测 16 条一批 0.41s、单条 0.04s，16 是吞吐与超时的折中起点
+    batch-size: ${RAG_EMBEDDING_BATCH_SIZE:16}
+  retrieval:
+    # hybrid=向量路与关键词路各取 candidate-k 条再做 RRF；换模式不会改数据库，只改排分方式
+    mode: ${RAG_RETRIEVAL_MODE:hybrid}
+    top-k: ${RAG_RETRIEVAL_TOP_K:6}
+    # 每路先取多少候选再融合：本地库小，40 已经覆盖绝大多数场景
+    candidate-k: 40
+    # RRF 平滑常数，业界惯例 60；改它等于改「第一名值多少」
+    rrf-k: 60
+    # 只在纯向量模式生效：相似度低于它宁可不答
+    min-score: 0.45
+    # 只在混合模式生效：RRF 分数量级是 0.01x，照抄 0.45 会把所有结果全滤掉（硬性约束 1）
+    min-rrf-score: 0.012
+    # 命中子块时把父块也带上：子块够准，父块够全
+    parent-context: true
+    budget:
+      # 当前 chat 模型加载后的真实窗口。实测 192.168.1.61 上 glm-4-9b-chat-1m 与 qwen2.5-vl-7b 都是 16384
+      # （2026-11-16，用一条超限请求把 n_ctx 从 400 错误体里读出来的）。配小了不报错、只是白少装资料；
+      # 配大了会被 400 拒掉，那条分支见 ContextOverflow，报错里会回显模型侧真实窗口
+      n-ctx: ${RAG_LLM_N_CTX:16384}
+      output-reserve-tokens: 700
+      # 系统提示词 + 引用说明 + 问题本身的字符预留
+      template-chars: 900
+      # 实测 1 个 token ≈ 1.5 个汉字（60000 字 = 36005~40019 token），按 1 字 1 token 算是刻意保守
+      chars-per-token: 1.0
+      history-max-turns: 4
+      history-max-chars: 800
+  ingest:
+    worker-enabled: ${RAG_INGEST_WORKER:true}
+    poll-interval: 2s
+    # 租约：worker 崩溃后任务最多卡这么久就会被重新排队
+    lease-duration: 10m
+    max-attempts: 3
+    # 单机单卡：并发 >1 不会更快，只会让 embedding 排队并撞超时
+    concurrency: ${RAG_INGEST_CONCURRENCY:1}
+    max-file-size-mb: 100
+    allowed-extensions: pdf,docx,doc,md,markdown,txt,csv,json,html,htm
+    chunk:
+      # child-chars 的上限来自 embedding 模型窗口（512 token ≈ 400 汉字）：
+      # 调大不会报错，但超出部分被模型静默截断，表现为「文档里明明有却搜不到」
+      child-chars: 400
+      child-min-chars: 120
+      overlap-chars: 60
+      parent-max-chars: 1200
+      parent-child: true
+  archive:
+    # 导入端对包体积的第二道闸：容器只负责收字节，这里决定「这么大的包我们真的解不解」
+    max-import-mb: ${RAG_ARCHIVE_MAX_IMPORT_MB:512}
+
+logging:
+  level:
+    com.rag.knowledge: INFO
+    dev.langchain4j: INFO
+  pattern:
+    # 一次问答横跨 HTTP 线程与 rag-chat-* 线程，没有这个前缀就只能靠时间戳猜哪几行是同一次
+    correlation: "[%X{traceId:-}] "
+  file:
+    # 降级/截断/拒答的 WARN 要在进程退出之后还查得到，所以落文件；deploy/start.sh 把控制台另写到 rag-api.out
+    name: ${RAG_LOG_FILE:deploy/logs/rag-api.log}
+  charset:
+    # 文件固定 UTF-8：中文日志用 GBK 写出来，换台机器或拉进编辑器就是一堆乱码，而排障正是要看那句中文
+    file: UTF-8
+  logback:
+    rollingpolicy:
+      # 单文件 20MB、留 14 天、总量封顶 500MB：本地机器不该被自己的日志撑满硬盘
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 500MB

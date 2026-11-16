@@ -1,0 +1,4 @@
+# 这两个必须锁 LF：core.autocrlf=true 的机器上 checkout 出来带 CR，
+# bash 会把行尾读成字符，现象是 `set -euo pipefail\r` 报错或 bad interpreter。
+*.sh text eol=lf
+*.mjs text eol=lf
