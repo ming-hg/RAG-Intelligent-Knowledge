@@ -5,7 +5,7 @@
 
 需求、架构、实现已全部重构：前端 Vue 3 + TypeScript，后端 Spring Boot 4 + LangChain4j + PostgreSQL 17/pgvector。
 执行基线与决策记录见 [docs/重构方案.md](docs/重构方案.md)，远程模型服务接入见 [docs/远程模型服务接入.md](docs/远程模型服务接入.md)。
-虚拟化打开后的连库实测按 [docs/实测指导.md](docs/实测指导.md) 逐步跑，样本文件在 `samples/`（含两份故意失败的乱码/空正文文件）。
+Docker 引擎能应答后的连库实测按 [docs/实测指导.md](docs/实测指导.md) 逐步跑，样本文件在 `samples/`（含两份故意失败的乱码/空正文文件）。
 
 ## 目录
 
