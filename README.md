@@ -31,8 +31,11 @@ deploy/stop.sh            # 停；--keep-db 只停应用，--purge-data 才会�
 不是虚拟化没开）时不会干等。
 `deploy/smoke.sh` 就是这条约定的产物：[docs/实测指导.md](docs/实测指导.md) §4~§11 那段手点验收，它一条命令跑完，全绿代表这批里程碑没退化。
 默认不破坏数据；加 `--archive` 才会删掉该库全部文档再导回来（归档「免重算」只能这么验）；
+加 `--models` 让自检真去模型服务探一次 chat/embedding；
 `--shape-only` 只验接口契约，用来在没库没模型的环境（包括那份前端联调用的 mock）自检脚本自身。
 退出码：0 全绿 / 1 有失败 / 2 连不上后端或 node 版本不够（需要 20.19+ 或 22.12+）。
+临时试一个参数不用改 `.env`：`deploy/start.sh` 让命令行的值赢过 `.env`，并打印出被顶掉的是哪几项
+（`RAG_LLM_N_CTX=60000 deploy/start.sh` 撞一次 413，模型就把自己的真实窗口写进错误里——LM Studio 没有查询端点）。
 最后一步会拿 `/api/diagnostics` 与问答的 `meta` 帧对账：`vectorDegraded` 不为 0 时，前面那批 rrf 分数是关键词路
 给的，整批检索结论都不作数——这一条判的正是「刚才那些步骤可不可信」。
 
@@ -89,7 +92,7 @@ curl -F "file=@kb-1-20261115-213000.zip" "http://localhost:8080/api/knowledge-ba
 前端只认相对路径 `/api`，代理目标由 `rag-web/.env` 的 `VITE_API_TARGET` 决定，默认 `http://localhost:8080`；
 类型检查与构建：`npm run typecheck`、`npm run build`（先 `vue-tsc --noEmit` 再打包）。
 
-不连数据库也能验证的代码层测试（当前 216 例）：
+不连数据库也能验证的代码层测试（当前 219 例）：
 
 ```bash
 cd rag-api && mvn -o test
@@ -102,6 +105,8 @@ cd rag-api && mvn -o test
 curl "http://localhost:8080/api/search?q=怎么分块&kbId=1&topK=5"
 
 # 流式问答：事件序列 meta -> delta* -> done
+# kbIds 必填（不带给已有会话也不行）——缺范围在起流之前回 400 JSON，不会先建一条流再报错
+# Windows/Git Bash 里 body 带中文改用 --data-binary @file.json（控制台是 GBK，直接 -d 送出的是非 UTF-8 字节）
 curl -N -H "Content-Type: application/json" -d '{"question":"这份文档怎么分块的？","kbIds":[1]}' \
   http://localhost:8080/api/chat/ask
 
