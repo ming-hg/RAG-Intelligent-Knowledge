@@ -652,6 +652,54 @@ async function stepDisableSegment() {
   })
 }
 
+/** RRF 只按名次给分：两路各自的第 1 名同为 1/(60+1)=0.016393，相邻名次至少差 1/61−1/62≈2.6e-4。
+ *  这里留的是浮点余量，不是「差不多就算」——容差再大一点就糊住真实的名次差了。 */
+const TIE_EPS = 1e-9
+
+/**
+ * 「并列名次」读数：把掉出 hit@1 的那几条正例用同一问句重新检索一次，比第 1 名与它自己的 rrf。
+ * 相等就是并列被「文档名 + 块序」破开（ADR-022），不等才是真排序差异。
+ * 名次和 rrf 原本只写在 eval_result.detail 里、接口不吐，而检索是确定性的：同一问句、同一 topK
+ * 重新检索出来的名次序列，就是这一轮当时的那一份。
+ * 全程只报数、不断言——样本或库一变，任何断言都会变成误报，而这件事的目的是让数字不再神秘。
+ */
+async function explainHitAt1Loss(rows, mode, topK) {
+  const lost = ` ｜ hit@1<hit@K，掉的那 ${rows.length} 条：` +
+    rows.map((c) => `「${c.question}」第 ${c.firstRank} 名`).join('、')
+  if (mode !== 'hybrid') return lost
+  const tied = []
+  const ordered = []
+  const unread = []
+  for (const c of rows) {
+    let hits
+    try {
+      hits = (await api('POST', '/search', { json: { query: c.question, kbIds: [kbId], mode, topK } })).data.hits
+    } catch {
+      unread.push(c.question)
+      continue
+    }
+    const first = hits[0]
+    const mine = hits[c.firstRank - 1]
+    if (!first || !mine) unread.push(c.question)
+    else (Math.abs(first.rrf - mine.rrf) <= TIE_EPS ? tied : ordered).push([first, mine])
+  }
+  const parts = []
+  if (tied.length > 0) {
+    const scores = [...new Set(tied.map(([first]) => first.rrf.toFixed(6)))].join('/')
+    parts.push(`${tied.length} 条是并列名次（前两名 rrf 同为 ${scores}），由「文档名+块序」定序——` +
+      '两路第 1 名本来就拿同一个数，不是检索退化（ADR-022）')
+  }
+  if (ordered.length > 0) {
+    parts.push(`${ordered.length} 条非并列，是真排序差异（` +
+      ordered.map(([first, mine]) => `第 1 名 rrf=${first.rrf.toFixed(6)} > 第 ${mine.rank} 名 rrf=${mine.rrf.toFixed(6)}`)
+        .join('；') + '）')
+  }
+  if (unread.length > 0) {
+    parts.push(`${unread.length} 条重新检索没对上名次，并列与否读不出`)
+  }
+  return `${lost} —— ${parts.join('；')}`
+}
+
 /**
  * 第 9 步：把「这套检索现在什么样」压成一个能前后比较的数字。
  * <p>
@@ -749,20 +797,17 @@ async function stepEvaluation() {
         assert(flagged.length > 0,
           `汇总说 ${m.truncatedCaseRate} 的正例有块没装进上下文，逐条结果里却一条都没标出来`)
       }
-      // 只做报告、不做断言：hit@1 比 hit@K 低的时候，把「掉的是哪条、排第几」当场说出来。
-      // ADR-022 之后两路第 1 名的 RRF 分数相等（都是 1/61），并列由「文档名 + 块序」破，
-      // 于是同一批用例的 hit@1 固定在 0.8 而不是 1.0——不说清楚，下一轮就会当成检索退化去查阈值
-      const tied = m.hitAt1 < m.hitAtK
-        ? d.cases.filter((c) => c.correct && c.firstRank > 1)
-          .map((c) => `「${c.question}」第 ${c.firstRank} 名`).join('、')
-        : ''
+      // 只做报告、不做断言：hit@1 比 hit@K 低的时候，得说清掉的那几条是「并列被破开」还是「真排到后面去了」。
+      // 两路各自的第 1 名拿到完全相同的 1/(60+1)，谁在前由「文档名 + 块序」定（ADR-022），
+      // 于是本机 hybrid 的 hit@1 固定在 0.8——不把这俩分数读出来，下一轮就会当成检索退化去查阈值。
+      const dropped = m.hitAt1 < m.hitAtK ? d.cases.filter((c) => c.correct && c.firstRank > 1) : []
+      const tieNote = dropped.length === 0 ? '' : await explainHitAt1Loss(dropped, mode, d.run.settings.topK)
       return `hit@1=${m.hitAt1} hit@3=${m.hitAt3} hit@K=${m.hitAtK} MRR=${m.mrr} ` +
         `空召回率=${m.emptyRecallRate ?? '不适用'} 拒答正确率=${m.refusalAccuracy ?? '不适用'} ` +
         `截断率=${m.truncatedCaseRate ?? '不适用'}` +
         ` ｜ 负例：${neg.refused ? `拒答（${neg.hits === 0 ? '一条没召回' : `召回 ${neg.hits} 条却一块都装不下`}）`
           : `没拒答，召回 ${neg.hits} 条当资料`}` +
-        (tied ? ` ｜ hit@1<hit@K，排在第 2 名之后的命中用例：${tied}` +
-          (mode === 'hybrid' ? '（两路第 1 名的 RRF 都是 1/61，并列由文档名+块序破，非退化，见 ADR-022）' : '') : '')
+        tieNote
     })
   }
 
