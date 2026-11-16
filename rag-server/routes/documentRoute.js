@@ -8,7 +8,7 @@ const {
 } = require('../services/ragService');
 
 // 多文件上传接口（字段名file，对应前端上传组件的name）
-router.post('/document/upload', upload.array('file', 5), async (req, res, next) => {
+router.post('/knowledge/upload', upload.array('file', 5), async (req, res, next) => {
     try {
         const files = req.files; // 上传的文件列表
         if (!files || files.length === 0) {
@@ -31,9 +31,9 @@ router.post('/document/upload', upload.array('file', 5), async (req, res, next) 
 })
 
 // 2. 文档删除接口（按文件名删除）
-router.delete('/document/delete', async (req, res, next) => {
+router.post('/knowledge/delete', async (req, res, next) => {
   try {
-    const { fileName } = req.query;
+    const { fileName } = req.body;
     if (!fileName) {
       return res.status(400).json({ code: 400, message: '请传入要删除的文档名称' });
     }
@@ -44,8 +44,33 @@ router.delete('/document/delete', async (req, res, next) => {
   }
 });
 
-// 3. 知识库列表查询接口（获取所有文档信息）
-router.get('/document/list', async (req, res, next) => {
+// 3. 批量删除接口
+router.post('/knowledge/batchDelete', async (req, res, next) => {
+  try {
+    const { fileNames } = req.body;
+    if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) {
+      return res.status(400).json({ code: 400, message: '请传入要删除的文档名称列表' });
+    }
+    const results = [];
+    for (const fileName of fileNames) {
+      const result = await deleteDocumentByFileName(fileName);
+      results.push(result);
+    }
+    res.json({ 
+      code: 200, 
+      message: '批量删除完成', 
+      data: { 
+        deletedCount: results.length,
+        results: results
+      } 
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 4. 知识库列表查询接口（获取所有文档信息）
+router.get('/knowledge/list', async (req, res, next) => {
   try {
     const docList = await getKnowledgeBaseList();
     res.json({
@@ -62,8 +87,8 @@ router.get('/document/list', async (req, res, next) => {
   }
 });
 
-// 4. 知识库状态查询接口（获取知识库统计信息）
-router.get('/document/status', async (req, res, next) => {
+// 5. 知识库状态查询接口（获取知识库统计信息）
+router.get('/knowledge/status', async (req, res, next) => {
   try {
     const docList = await getKnowledgeBaseList();
     const totalDoc = docList.length;

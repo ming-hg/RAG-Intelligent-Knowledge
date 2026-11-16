@@ -79,14 +79,17 @@ async function initVectorStore() {
 async function batchAddChunksToVectorStore(chunks, metadata) {
   const vectorStore = await initVectorStore();
   // 为每个分块添加独立元数据（关联文档信息）
-  const chunkMetadatas = chunks.map((chunk, index) => ({
-    ...metadata, // 继承文档级元数据
-    chunkIndex: index, // 分块序号
-    chunkLength: chunk.length, // 分块长度
-    content: chunk // 分块内容（便于后续溯源）
+  const documents = chunks.map((chunk, index) => ({
+    pageContent: chunk,
+    metadata: {
+      ...metadata, // 继承文档级元数据
+      chunkIndex: index, // 分块序号
+      chunkLength: chunk.length, // 分块长度
+      content: chunk // 分块内容（便于后续溯源）
+    }
   }));
   // 批量入库
-  await vectorStore.addTexts(chunks, chunkMetadatas);
+  await vectorStore.addDocuments(documents);
   return { chunkCount: chunks.length, success: true };
 }
 
@@ -214,12 +217,16 @@ async function addDocumentToKnowledge(file) {
 
     // 3. 向量化并入库：使用自定义Embedding适配类生成向量，存储到ChromaDB
     const vectorStore = await initVectorStore();
-    await vectorStore.addTexts(chunks, chunks.map((chunk, index) => ({
-      fileName: originalname,
-      chunkIndex: index,
-      content: chunk,
-      uploadTime: new Date().toISOString(),
-    })));
+    const documents = chunks.map((chunk, index) => ({
+      pageContent: chunk,
+      metadata: {
+        fileName: originalname,
+        chunkIndex: index,
+        content: chunk,
+        uploadTime: new Date().toISOString(),
+      }
+    }));
+    await vectorStore.addDocuments(documents);
 
     // 删除临时文件
     fs.unlinkSync(filePath);
