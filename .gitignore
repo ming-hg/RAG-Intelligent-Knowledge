@@ -19,6 +19,8 @@ deploy/.env
 # deploy/start.sh 的运行期产物：rag-api.out 是 stdout 落盘，*.pid 是进程号
 *.out
 *.pid
+# logback 按天滚出来的归档包是 .gz，上面的 *.log 盖不住它
+deploy/logs/*.gz
 .idea/
 .vscode/
 *.iml
