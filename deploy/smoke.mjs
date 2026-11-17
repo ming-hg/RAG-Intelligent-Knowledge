@@ -864,17 +864,28 @@ async function stepArchive() {
   let exportedDocs = []
   let manifest = null
   let disabled = null
+  let offBefore = 0
+  let offAfterImport = []
   // 必须赶在导出之前关：包里没有这个状态，后面「导入把人工意图带回来了」就只是在验一个没发生过的假设
   await check('先关掉一个块，看导入能不能把它原样带回来', async () => {
     const env = await api('GET', '/documents', { params: { kbId, status: 'READY', limit: 5 } })
-    const doc = env.data[0]
-    assert(doc, '库里没有 READY 文档，归档段没得测')
-    const segs = await api('GET', `/documents/${doc.id}/segments`, { params: { onlySearchable: true, limit: 20 } })
-    const seg = (segs.data ?? []).find((s) => s.available)
-    assert(seg, '这篇文档没有可用块')
+    // 列表按 id 倒序，data[0] 永远是同一篇：连着跑几轮 --archive 会把这篇的块一块块磨光，
+    // 所以要在前几篇 READY 文档里找第一篇「确实还有可用块」的，别死盯第一条
+    let doc = null
+    let seg = null
+    for (const candidate of env.data ?? []) {
+      const segs = await api('GET', `/documents/${candidate.id}/segments`,
+        { params: { onlySearchable: true, limit: 20 } })
+      const hit = (segs.data ?? []).find((s) => s.available)
+      if (hit) { doc = candidate; seg = hit; break }
+    }
+    assert(seg, `前 ${(env.data ?? []).length} 篇 READY 文档一篇可用块都没有：` +
+      '要么库里真没内容，要么上一轮 --archive 关掉的块没恢复（本脚本跑完会自己恢复）')
+    const all = await api('GET', `/documents/${doc.id}/segments`, { params: { onlySearchable: false, limit: 200 } })
+    offBefore = (all.data ?? []).filter((s) => !s.available).length
     await api('PATCH', `/documents/${doc.id}/segments/${seg.id}`, { params: { available: false } })
-    disabled = { docName: doc.name, segmentId: seg.id }
-    return `${doc.name} #${seg.id}`
+    disabled = { docId: doc.id, docName: doc.name, segmentId: seg.id }
+    return `${doc.name} #${seg.id}${offBefore ? `（这篇本来就有 ${offBefore} 块是人工关着的，本轮不动它们）` : ''}`
   })
 
   await check('GET /export?vectors=true&files=true 是合法 zip', async () => {
@@ -953,9 +964,27 @@ async function stepArchive() {
     const restored = (env.data ?? []).find((d) => d.name === disabled.docName && d.status === 'READY')
     assert(restored, `《${disabled.docName}》没在导入后回到 READY`)
     const segs = await api('GET', `/documents/${restored.id}/segments`, { params: { onlySearchable: false, limit: 200 } })
-    const off = (segs.data ?? []).filter((s) => !s.available)
-    assert(off.length > 0, '导入把 available=false 洗回了 true：人工意图是数据的一部分（ADR-018）')
-    return `${restored.name} 里 ${off.length} 块仍为禁用`
+    offAfterImport = (segs.data ?? []).filter((s) => !s.available)
+    assert(offAfterImport.length > offBefore, `本轮关掉 1 块，导入后禁用块却是 ${offAfterImport.length} 块` +
+      `（导入前 ${offBefore} 块）：多出来那块没被带回来——人工意图是数据的一部分（ADR-018）`)
+    return `${restored.name} 里 ${offAfterImport.length - offBefore} 块新禁用（导入前已有 ${offBefore} 块，没算进来）`
+  })
+
+  // 关掉的那块必须恢复：导出→导入会把这个状态一路带下去，不恢复就等于每跑一次 --archive 少一块可用，
+  // 跑够几轮整篇文档再没有可关的块，第一段断言就必然炸（真机就是这么炸的）
+  await check('恢复本轮关掉的块，别让 --archive 越跑越少', async () => {
+    if (offAfterImport.length <= offBefore) return skip('恢复禁用块', '本轮没拿到导入后的禁用清单')
+    const env = await api('GET', '/documents', { params: { kbId, limit: 200 } })
+    const doc = (env.data ?? []).find((d) => d.name === disabled?.docName && d.status === 'READY')
+    assert(doc, `找不到《${disabled?.docName}》，恢复不了`)
+    const victims = offAfterImport.slice(0, offAfterImport.length - offBefore)
+    for (const s of victims) {
+      await api('PATCH', `/documents/${doc.id}/segments/${s.id}`, { params: { available: true } })
+    }
+    const after = await api('GET', `/documents/${doc.id}/segments`, { params: { onlySearchable: false, limit: 200 } })
+    const leftOff = (after.data ?? []).filter((s) => !s.available).length
+    assert(leftOff === offBefore, `恢复了 ${victims.length} 块之后还剩 ${leftOff} 块禁用，导入前是 ${offBefore} 块`)
+    return `《${doc.name}》恢复 ${victims.length} 块，剩 ${leftOff} 块维持原样`
   })
 }
 
